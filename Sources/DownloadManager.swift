@@ -67,6 +67,17 @@ final class DownloadManager: ObservableObject {
     @Published var copiedToClipboard = false
     @Published var selectedIDs: Set<String> = []
     @Published var failedDownloads: [FailedDownload] = []
+    @Published var photoSaveMessage: String?
+
+    static let autoDownloadKey = "autoDownload"
+    static let autoSavePhotosKey = "autoSaveToPhotos"
+    static let qualityKey = "playlistQuality"
+
+    /// 设置里选的默认画质
+    static var defaultQuality: Quality {
+        Quality(rawValue: UserDefaults.standard.string(forKey: qualityKey) ?? "") ?? .best
+    }
+    private static var autoSavePhotos: Bool { UserDefaults.standard.bool(forKey: autoSavePhotosKey) }
 
     private var task: Task<Void, Never>?
 
@@ -81,7 +92,7 @@ final class DownloadManager: ObservableObject {
 
     // MARK: 解析链接
 
-    func fetch(_ text: String) {
+    func fetch(_ text: String, autoDownload: Bool = false) {
         guard let url = Self.extractURL(from: text) else {
             phase = .failed("没认出链接，请粘贴完整的 YouTube 链接")
             return
@@ -92,15 +103,17 @@ final class DownloadManager: ObservableObject {
         playlist = nil
         selectedIDs = []
         failedDownloads = []
+        photoSaveMessage = nil
         phase = .fetching
 
         if DouyinFetcher.isDouyin(url) {
-            fetchDouyin(url)
+            fetchDouyin(url, autoDownload: autoDownload)
             return
         }
 
         task = Task {
             var lastError: Error?
+            var autoKind: DownloadOption.Kind?
 
             // 链接里有 list= 就读取播放列表
             if let listID = ids.listID {
@@ -122,6 +135,7 @@ final class DownloadManager: ObservableObject {
                     let streams = try await video.streams
                     let metadata = try? await video.metadata
                     let options = Self.buildOptions(from: streams)
+                    if autoDownload { autoKind = Self.pick(Self.defaultQuality, from: streams) }
                     if options.isEmpty {
                         lastError = AppError("没有找到可以下载的格式")
                     } else {
@@ -139,13 +153,17 @@ final class DownloadManager: ObservableObject {
             if Task.isCancelled { return }
             if info != nil || playlist != nil {
                 phase = .ready
+                // 自动下载：只针对单个视频，播放列表还是让用户先勾选
+                if let autoKind, info != nil {
+                    download(DownloadOption(label: Self.defaultQuality.rawValue, detail: "", kind: autoKind))
+                }
             } else {
                 phase = .failed("解析失败：\(lastError.map { ErrorText.describe($0).text } ?? "未知错误")")
             }
         }
     }
 
-    private func fetchDouyin(_ url: URL) {
+    private func fetchDouyin(_ url: URL, autoDownload: Bool) {
         task = Task {
             do {
                 let result = try await DouyinFetcher.fetch(url)
@@ -167,6 +185,9 @@ final class DownloadManager: ObservableObject {
                 guard !options.isEmpty else { throw DouyinFetcher.Failure.noData }
                 info = VideoInfo(title: result.title, thumbnail: result.cover, options: options, note: result.note)
                 phase = .ready
+                if autoDownload, let first = options.first {
+                    download(first)
+                }
             } catch {
                 if Task.isCancelled { return }
                 phase = .failed("解析失败：\(ErrorText.describe(error).text)")
@@ -192,6 +213,10 @@ final class DownloadManager: ObservableObject {
                 progress = 1
                 if UserDefaults.standard.bool(forKey: Clipboard.autoCopyKey) {
                     copiedToClipboard = Clipboard.copyFile(output)
+                }
+                if Self.autoSavePhotos, Self.isVideoFile(output) {
+                    statusText = "正在存到相册…"
+                    photoSaveMessage = await PhotoSaver.save(output)
                 }
                 phase = .finished(output)
             } catch {
@@ -238,11 +263,13 @@ final class DownloadManager: ObservableObject {
         guard !items.isEmpty else { return }
         startWork()
         failedDownloads = []
+        photoSaveMessage = nil
 
         task = Task {
             defer { UIApplication.shared.isIdleTimerDisabled = false }
             let count = Double(items.count)
             var succeeded = 0
+            var savedToPhotos = 0
             var failed: [FailedDownload] = []
             var cancelled = false
 
@@ -258,8 +285,12 @@ final class DownloadManager: ObservableObject {
                     guard let kind = Self.pick(quality, from: streams) else {
                         throw AppError("没有合适的格式")
                     }
-                    _ = try await performDownload(kind, title: item.title, label: label, start: start, span: 1 / count)
+                    let output = try await performDownload(kind, title: item.title, label: label, start: start, span: 1 / count)
                     succeeded += 1
+                    if Self.autoSavePhotos, Self.isVideoFile(output) {
+                        statusText = "\(label)：正在存到相册…"
+                        if await PhotoSaver.save(output).hasPrefix("已存到相册") { savedToPhotos += 1 }
+                    }
                 } catch {
                     if Self.isCancellation(error) { cancelled = true; break }
                     // 失败的先记下来，继续下一个
@@ -272,6 +303,7 @@ final class DownloadManager: ObservableObject {
             progress = 1
             var message = cancelled ? "已取消，完成 \(succeeded) 个" : "下载完成：成功 \(succeeded) 个"
             if !failed.isEmpty { message += "，失败 \(failed.count) 个" }
+            if Self.autoSavePhotos && succeeded > 0 { message += "\n已存到相册 \(savedToPhotos) 个" }
             phase = .batchDone(message)
         }
     }
@@ -457,6 +489,10 @@ final class DownloadManager: ObservableObject {
     }
 
     // MARK: 小工具
+
+    static func isVideoFile(_ url: URL) -> Bool {
+        ["mp4", "mov", "m4v"].contains(url.pathExtension.lowercased())
+    }
 
     /// mp4 文件的第 4～8 个字节是 "ftyp"
     static func looksLikeMP4(_ url: URL) -> Bool {

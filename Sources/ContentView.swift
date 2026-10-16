@@ -6,7 +6,9 @@ struct ContentView: View {
     @State private var photoMessage: String?
     @FocusState private var linkFocused: Bool
     @AppStorage(Clipboard.autoCopyKey) private var autoCopy = false
-    @AppStorage("playlistQuality") private var playlistQuality: DownloadManager.Quality = .best
+    @AppStorage(DownloadManager.qualityKey) private var playlistQuality: DownloadManager.Quality = .best
+    @AppStorage(DownloadManager.autoDownloadKey) private var autoDownload = false
+    @AppStorage(DownloadManager.autoSavePhotosKey) private var autoSavePhotos = false
     @State private var showPlaylistItems = true
 
     var body: some View {
@@ -84,9 +86,18 @@ struct ContentView: View {
                 }
 
                 Section {
+                    Toggle("粘贴链接后自动下载", isOn: $autoDownload)
+                    Picker("默认画质", selection: $playlistQuality) {
+                        ForEach(DownloadManager.Quality.allCases) { quality in
+                            Text(quality.rawValue).tag(quality)
+                        }
+                    }
+                    Toggle("下载完成后自动保存到相册", isOn: $autoSavePhotos)
                     Toggle("下载完成后自动复制到剪贴板", isOn: $autoCopy)
+                } header: {
+                    Text("设置")
                 } footer: {
-                    Text("打开后，下载完成就能直接去微信等 App 里粘贴发送。")
+                    Text("自动下载：点「粘贴」或从分享菜单打开后，按默认画质直接下载单个视频（抖音下载无水印版）。播放列表仍会先列出来让你勾选。\n自动保存到相册：音频文件不会存进相册。")
                 }
             }
             .navigationTitle("视频下载")
@@ -123,7 +134,7 @@ struct ContentView: View {
         photoMessage = nil
         // 正在下载时只填入链接，不打断当前下载
         if !manager.isDownloading {
-            manager.fetch(text)
+            manager.fetch(text, autoDownload: autoDownload)
         }
     }
 
@@ -138,7 +149,14 @@ struct ContentView: View {
                 .focused($linkFocused)
             HStack {
                 Button {
-                    if let text = UIPasteboard.general.string { link = text }
+                    if let text = UIPasteboard.general.string {
+                        link = text
+                        if autoDownload {
+                            linkFocused = false
+                            photoMessage = nil
+                            manager.fetch(text, autoDownload: true)
+                        }
+                    }
                 } label: {
                     Label("粘贴", systemImage: "doc.on.clipboard")
                 }
@@ -149,7 +167,7 @@ struct ContentView: View {
                 Button("解析") {
                     linkFocused = false
                     photoMessage = nil
-                    manager.fetch(link)
+                    manager.fetch(link, autoDownload: autoDownload)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || manager.isBusy)
@@ -301,6 +319,9 @@ struct ContentView: View {
             }
             ShareLink(item: url) {
                 Label("分享 / 存到其他地方", systemImage: "square.and.arrow.up")
+            }
+            if let saved = manager.photoSaveMessage, photoMessage == nil {
+                Text(saved).font(.callout)
             }
             if manager.copiedToClipboard && photoMessage == nil {
                 Text("已自动复制到剪贴板，去微信里粘贴就行").font(.callout)
