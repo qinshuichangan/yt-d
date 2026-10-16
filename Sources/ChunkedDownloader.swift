@@ -6,9 +6,11 @@ enum ChunkedDownloader {
 
     enum Failure: LocalizedError {
         case http(Int)
+        case incomplete
         var errorDescription: String? {
             switch self {
             case .http(let code): return "服务器返回错误（HTTP \(code)）"
+            case .incomplete: return "文件没有下载完整，请重试"
             }
         }
     }
@@ -50,13 +52,22 @@ enum ChunkedDownloader {
                 total = value
             }
 
+            if data.isEmpty { break }
             try handle.write(contentsOf: data)
             offset += Int64(data.count)
             progress(offset, total)
 
-            if http.statusCode == 200 { break }          // 服务器忽略了 Range，已拿到完整文件
-            if Int64(data.count) < chunkSize { break }   // 最后一块
-            if let total, offset >= total { break }
+            if http.statusCode == 200 { break }  // 服务器忽略了 Range，已拿到完整文件
+            if let total {
+                // 知道总大小时，一直下到满为止（服务器有时一次只给一部分）
+                if offset >= total { break }
+            } else if Int64(data.count) < chunkSize {
+                break
+            }
+        }
+
+        if let total, offset < total {
+            throw Failure.incomplete
         }
     }
 }
