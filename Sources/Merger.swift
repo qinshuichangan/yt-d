@@ -96,10 +96,11 @@ enum Merger {
                         finish(video: true)
                         return
                     }
-                    let end = CMSampleBufferGetPresentationTimeStamp(fixed) + CMSampleBufferGetDuration(fixed)
-                    state.lock.lock()
-                    if end > state.videoEnd { state.videoEnd = end }
-                    state.lock.unlock()
+                    if let end = endTime(of: fixed) {
+                        state.lock.lock()
+                        if end > state.videoEnd { state.videoEnd = end }
+                        state.lock.unlock()
+                    }
                 }
             }
 
@@ -110,9 +111,7 @@ enum Merger {
                         finish(video: false)
                         return
                     }
-                    let duration = CMSampleBufferGetDuration(buffer)
-                    if duration.isValid && duration.seconds < 1 {
-                        let end = CMSampleBufferGetPresentationTimeStamp(buffer) + duration
+                    if let end = endTime(of: buffer) {
                         state.lock.lock()
                         if end > state.audioEnd { state.audioEnd = end }
                         state.lock.unlock()
@@ -130,8 +129,13 @@ enum Merger {
 
         // 按画面和声音中较短的那个结束
         var end = state.videoEnd
-        if state.audioEnd > .zero && state.audioEnd < end { end = state.audioEnd }
-        writer.endSession(atSourceTime: end)
+        if state.audioEnd.isNumeric, state.audioEnd > .zero,
+           !end.isNumeric || end == .zero || state.audioEnd < end {
+            end = state.audioEnd
+        }
+        if end.isNumeric && end > .zero {
+            writer.endSession(atSourceTime: end)
+        }
 
         await writer.finishWriting()
         guard writer.status == .completed else {
@@ -139,11 +143,22 @@ enum Merger {
         }
     }
 
+    /// 一个采样的结束时间；没有有效时间信息（比如标记帧）时返回 nil
+    private static func endTime(of buffer: CMSampleBuffer) -> CMTime? {
+        guard CMSampleBufferGetNumSamples(buffer) > 0 else { return nil }
+        let pts = CMSampleBufferGetPresentationTimeStamp(buffer)
+        let duration = CMSampleBufferGetDuration(buffer)
+        guard pts.isNumeric, duration.isNumeric, duration.seconds <= 1 else { return nil }
+        let end = pts + duration
+        return end.isNumeric ? end : nil
+    }
+
     /// 帧时长异常（超过 1 秒）时，改成正常的一帧时长
     private static func fixTiming(_ buffer: CMSampleBuffer, normal: CMTime) -> CMSampleBuffer? {
+        guard CMSampleBufferGetNumSamples(buffer) == 1 else { return buffer }
+        guard CMSampleBufferGetPresentationTimeStamp(buffer).isNumeric else { return buffer }
         let duration = CMSampleBufferGetDuration(buffer)
-        guard !duration.isValid || duration.seconds > 1 else { return buffer }
-        guard CMSampleBufferGetNumSamples(buffer) <= 1 else { return buffer }
+        guard !duration.isNumeric || duration.seconds > 1 else { return buffer }
 
         var timing = CMSampleTimingInfo(
             duration: normal,
