@@ -45,6 +45,7 @@ enum Merger {
         export.outputURL = output
         export.outputFileType = .mp4
         export.shouldOptimizeForNetworkUse = true
+        export.timeRange = range  // 再保险一次：导出时也只保留到真实长度
 
         await export.export()
         guard export.status == .completed else {
