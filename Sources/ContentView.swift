@@ -9,6 +9,9 @@ struct ContentView: View {
     @AppStorage(DownloadManager.qualityKey) private var playlistQuality: DownloadManager.Quality = .best
     @AppStorage(DownloadManager.autoDownloadKey) private var autoDownload = false
     @AppStorage(DownloadManager.autoSavePhotosKey) private var autoSavePhotos = false
+    @AppStorage(DownloadManager.autoReadClipboardKey) private var autoReadClipboard = false
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var lastPasteboardChange = -1
     @State private var showPlaylistItems = true
 
     var body: some View {
@@ -86,6 +89,7 @@ struct ContentView: View {
                 }
 
                 Section {
+                    Toggle("自动读取剪贴板里的链接", isOn: $autoReadClipboard)
                     Toggle("粘贴链接后自动下载", isOn: $autoDownload)
                     Picker("默认画质", selection: $playlistQuality) {
                         ForEach(DownloadManager.Quality.allCases) { quality in
@@ -97,11 +101,15 @@ struct ContentView: View {
                 } header: {
                     Text("设置")
                 } footer: {
-                    Text("自动下载：点「粘贴」或从分享菜单打开后，按默认画质直接下载单个视频（抖音下载无水印版）。播放列表仍会先列出来让你勾选。\n自动保存到相册：音频文件不会存进相册。")
+                    Text("自动读取剪贴板：打开 App 时，如果剪贴板里是 YouTube 或抖音链接，就自动填进来。iOS 每次会问「允许粘贴吗」，不想被问可以去 设置 → 视频下载 → 从其他 App 粘贴 → 允许。\n自动下载：点「粘贴」或从分享菜单打开后，按默认画质直接下载单个视频（抖音下载无水印版）。播放列表仍会先列出来让你勾选。\n自动保存到相册：音频文件不会存进相册。")
                 }
             }
             .navigationTitle("视频下载")
             .onOpenURL(perform: handleIncoming)
+            .onAppear(perform: checkClipboard)
+            .onChange(of: scenePhase) { phase in
+                if phase == .active { checkClipboard() }
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink {
@@ -110,6 +118,31 @@ struct ContentView: View {
                         Label("已下载", systemImage: "folder")
                     }
                 }
+            }
+        }
+    }
+
+    // MARK: 自动读取剪贴板
+
+    private func checkClipboard() {
+        guard autoReadClipboard, !manager.isBusy else { return }
+        let pasteboard = UIPasteboard.general
+        let count = pasteboard.changeCount
+        guard count != lastPasteboardChange else { return }  // 同一次复制只处理一次
+
+        // 先判断是不是网址（这一步不会触发系统的粘贴提示）
+        pasteboard.detectPatterns(for: [.probableWebURL]) { result in
+            DispatchQueue.main.async {
+                lastPasteboardChange = count
+                guard case .success(let patterns) = result, patterns.contains(.probableWebURL),
+                      let text = pasteboard.string,
+                      let url = DownloadManager.extractURL(from: text),
+                      DownloadManager.isSupportedLink(url),
+                      !manager.isBusy else { return }
+                link = text
+                linkFocused = false
+                photoMessage = nil
+                manager.fetch(text, autoDownload: autoDownload)
             }
         }
     }

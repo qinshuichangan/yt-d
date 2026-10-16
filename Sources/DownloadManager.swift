@@ -72,6 +72,7 @@ final class DownloadManager: ObservableObject {
     static let autoDownloadKey = "autoDownload"
     static let autoSavePhotosKey = "autoSaveToPhotos"
     static let qualityKey = "playlistQuality"
+    static let autoReadClipboardKey = "autoReadClipboard"
 
     /// 设置里选的默认画质
     static var defaultQuality: Quality {
@@ -489,6 +490,13 @@ final class DownloadManager: ObservableObject {
     }
 
     // MARK: 小工具
+
+    /// 是不是这个 App 能处理的链接（YouTube / 抖音）
+    static func isSupportedLink(_ url: URL) -> Bool {
+        let host = url.host?.lowercased() ?? ""
+        return host.hasSuffix("youtube.com") || host == "youtu.be" || host.hasSuffix(".youtu.be")
+            || DouyinFetcher.isDouyin(url)
+    }
 
     static func isVideoFile(_ url: URL) -> Bool {
         ["mp4", "mov", "m4v"].contains(url.pathExtension.lowercased())
