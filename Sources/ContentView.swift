@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var photoMessage: String?
     @FocusState private var linkFocused: Bool
     @AppStorage(Clipboard.autoCopyKey) private var autoCopy = false
+    @AppStorage("playlistQuality") private var playlistQuality: DownloadManager.Quality = .best
 
     var body: some View {
         NavigationStack {
@@ -21,6 +22,10 @@ struct ContentView: View {
                     }
                 }
 
+                if let playlist = manager.playlist {
+                    playlistSection(playlist)
+                }
+
                 if let info = manager.info {
                     infoSection(info)
                     optionsSection(info)
@@ -32,6 +37,18 @@ struct ContentView: View {
 
                 if let url = manager.finishedURL {
                     finishedSection(url)
+                }
+
+                if let message = manager.batchMessage {
+                    Section {
+                        Label(message, systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        NavigationLink {
+                            LibraryView()
+                        } label: {
+                            Label("去「已下载」查看", systemImage: "folder")
+                        }
+                    }
                 }
 
                 if let message = manager.errorMessage {
@@ -116,6 +133,45 @@ struct ContentView: View {
                 Text("在 YouTube App 里点「分享」→「复制链接」，再回来点「粘贴」。")
                 Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
             }
+        }
+    }
+
+    // MARK: 播放列表
+
+    private func playlistSection(_ playlist: PlaylistInfo) -> some View {
+        Section {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(playlist.title).font(.headline)
+                Text("\(playlist.items.count) 个视频" + (playlist.isMix ? "（YouTube 自动合辑）" : ""))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            DisclosureGroup("查看列表") {
+                ForEach(Array(playlist.items.enumerated()), id: \.element.id) { index, item in
+                    Text("\(index + 1). \(item.title)")
+                        .font(.callout)
+                        .lineLimit(2)
+                }
+            }
+
+            Picker("画质", selection: $playlistQuality) {
+                ForEach(DownloadManager.Quality.allCases) { quality in
+                    Text(quality.rawValue).tag(quality)
+                }
+            }
+
+            Button {
+                photoMessage = nil
+                manager.downloadPlaylist(playlistQuality)
+            } label: {
+                Label("全部下载（\(playlist.items.count) 个）", systemImage: "square.and.arrow.down.on.square")
+            }
+            .disabled(manager.isBusy)
+        } header: {
+            Text("播放列表")
+        } footer: {
+            Text("会一个接一个依次下载，下载时请留在 App 里。下载失败的视频会自动跳过。")
         }
     }
 

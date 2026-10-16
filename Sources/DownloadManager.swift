@@ -2,6 +2,12 @@ import Foundation
 import UIKit
 import YouTubeKit
 
+struct AppError: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
+}
+
 struct VideoInfo {
     let title: String
     let thumbnail: URL?
@@ -27,11 +33,22 @@ final class DownloadManager: ObservableObject {
         case ready
         case downloading
         case finished(URL)
+        case batchDone(String)
         case failed(String)
+    }
+
+    /// 批量下载时的画质选择
+    enum Quality: String, CaseIterable, Identifiable {
+        case best = "最高画质"
+        case hd720 = "720p"
+        case fast = "快速（直接下载）"
+        case audio = "仅音频（m4a）"
+        var id: String { rawValue }
     }
 
     @Published var phase: Phase = .idle
     @Published var info: VideoInfo?
+    @Published var playlist: PlaylistInfo?
     @Published var progress: Double = 0
     @Published var statusText = ""
     @Published var sizeText = ""
@@ -45,6 +62,7 @@ final class DownloadManager: ObservableObject {
     var isDownloading: Bool { if case .downloading = phase { return true }; return false }
     var isBusy: Bool { isFetching || isDownloading }
     var finishedURL: URL? { if case .finished(let url) = phase { return url }; return nil }
+    var batchMessage: String? { if case .batchDone(let msg) = phase { return msg }; return nil }
     var errorMessage: String? { if case .failed(let msg) = phase { return msg }; return nil }
 
     // MARK: 解析链接
@@ -54,92 +72,73 @@ final class DownloadManager: ObservableObject {
             phase = .failed("没认出链接，请粘贴完整的 YouTube 链接")
             return
         }
+        let ids = Self.parseIDs(url)
         task?.cancel()
         info = nil
+        playlist = nil
         phase = .fetching
 
         task = Task {
-            do {
-                // 先在本机解析，失败时再用 YouTubeKit 作者提供的远程服务器
-                let video = YouTube(url: url, methods: [.local, .remote])
-                let streams = try await video.streams
-                let metadata = try? await video.metadata
-                let options = Self.buildOptions(from: streams)
-                guard !options.isEmpty else {
-                    phase = .failed("没有找到可以下载的格式")
-                    return
+            var lastError: Error?
+
+            // 链接里有 list= 就读取播放列表
+            if let listID = ids.listID {
+                do {
+                    playlist = try await PlaylistFetcher.fetch(listID: listID, seedVideoID: ids.videoID)
+                } catch {
+                    lastError = error
                 }
-                info = VideoInfo(
-                    title: metadata?.title ?? video.videoID,
-                    thumbnail: metadata?.thumbnail?.url,
-                    options: options
-                )
+            }
+
+            // 有单个视频（或者根本不是列表链接）就解析这个视频
+            if ids.videoID != nil || ids.listID == nil {
+                do {
+                    // 先在本机解析，失败时再用 YouTubeKit 作者提供的远程服务器
+                    let video = ids.videoID.map { YouTube(videoID: $0, methods: [.local, .remote]) }
+                        ?? YouTube(url: url, methods: [.local, .remote])
+                    let streams = try await video.streams
+                    let metadata = try? await video.metadata
+                    let options = Self.buildOptions(from: streams)
+                    if options.isEmpty {
+                        lastError = AppError("没有找到可以下载的格式")
+                    } else {
+                        info = VideoInfo(
+                            title: metadata?.title ?? video.videoID,
+                            thumbnail: metadata?.thumbnail?.url,
+                            options: options
+                        )
+                    }
+                } catch {
+                    lastError = error
+                }
+            }
+
+            if Task.isCancelled { return }
+            if info != nil || playlist != nil {
                 phase = .ready
-            } catch {
-                if Task.isCancelled { return }
-                phase = .failed("解析失败：\(error.localizedDescription)")
+            } else {
+                phase = .failed("解析失败：\(lastError?.localizedDescription ?? "未知错误")")
             }
         }
     }
 
-    // MARK: 下载
+    // MARK: 下载单个视频
 
     func download(_ option: DownloadOption) {
         guard let info else { return }
-        task?.cancel()
-        phase = .downloading
-        progress = 0
-        sizeText = ""
-        copiedToClipboard = false
-        UIApplication.shared.isIdleTimerDisabled = true  // 下载时不自动锁屏
+        startWork()
 
         task = Task {
             defer { UIApplication.shared.isIdleTimerDisabled = false }
-            let fm = FileManager.default
-            let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let tmp = fm.temporaryDirectory
-            let base = Self.safeFileName(info.title)
-            var cleanup: [URL] = []
-
             do {
-                let output: URL
-                switch option.kind {
-                case let .single(stream, ext):
-                    output = Self.uniqueURL(docs.appendingPathComponent("\(base).\(ext)"))
-                    cleanup = [output]
-                    statusText = "正在下载…"
-                    try await ChunkedDownloader.download(from: stream.url, to: output) { done, total in
-                        Task { @MainActor in self.report(done, total, start: 0, span: 1) }
-                    }
-
-                case let .merge(video, audio):
-                    let videoFile = tmp.appendingPathComponent(UUID().uuidString + ".mp4")
-                    let audioFile = tmp.appendingPathComponent(UUID().uuidString + ".m4a")
-                    output = Self.uniqueURL(docs.appendingPathComponent("\(base).mp4"))
-                    cleanup = [videoFile, audioFile, output]
-
-                    statusText = "正在下载画面…"
-                    try await ChunkedDownloader.download(from: video.url, to: videoFile) { done, total in
-                        Task { @MainActor in self.report(done, total, start: 0, span: 0.85) }
-                    }
-                    statusText = "正在下载声音…"
-                    try await ChunkedDownloader.download(from: audio.url, to: audioFile) { done, total in
-                        Task { @MainActor in self.report(done, total, start: 0.85, span: 0.12) }
-                    }
-                    statusText = "正在合并…"
-                    sizeText = ""
-                    try await Merger.merge(video: videoFile, audio: audioFile, output: output)
-                    try? fm.removeItem(at: videoFile)
-                    try? fm.removeItem(at: audioFile)
-                }
+                let output = try await performDownload(option.kind, title: info.title, label: nil, start: 0, span: 1)
                 progress = 1
                 if UserDefaults.standard.bool(forKey: Clipboard.autoCopyKey) {
                     copiedToClipboard = Clipboard.copyFile(output)
                 }
                 phase = .finished(output)
             } catch {
-                cleanup.forEach { try? fm.removeItem(at: $0) }
-                if Task.isCancelled || (error as? URLError)?.code == .cancelled || error is CancellationError {
+                if Self.isCancellation(error) {
                     phase = .ready
                 } else {
                     phase = .failed("下载失败：\(error.localizedDescription)")
@@ -148,8 +147,113 @@ final class DownloadManager: ObservableObject {
         }
     }
 
+    // MARK: 下载整个播放列表
+
+    func downloadPlaylist(_ quality: Quality) {
+        guard let playlist else { return }
+        startWork()
+
+        task = Task {
+            defer { UIApplication.shared.isIdleTimerDisabled = false }
+            let items = playlist.items
+            let count = Double(items.count)
+            var succeeded = 0
+            var failed = 0
+            var cancelled = false
+
+            for (index, item) in items.enumerated() {
+                if Task.isCancelled { cancelled = true; break }
+                let label = "第 \(index + 1)/\(items.count) 个"
+                let start = Double(index) / count
+                progress = start
+                sizeText = ""
+                statusText = "\(label)：正在解析…"
+                do {
+                    let streams = try await YouTube(videoID: item.videoID, methods: [.local, .remote]).streams
+                    guard let kind = Self.pick(quality, from: streams) else {
+                        throw AppError("没有合适的格式")
+                    }
+                    _ = try await performDownload(kind, title: item.title, label: label, start: start, span: 1 / count)
+                    succeeded += 1
+                } catch {
+                    if Self.isCancellation(error) { cancelled = true; break }
+                    failed += 1  // 失败的跳过，继续下一个
+                }
+            }
+
+            progress = 1
+            var message = cancelled ? "已取消，完成 \(succeeded) 个" : "全部完成：成功 \(succeeded) 个"
+            if failed > 0 { message += "，失败 \(failed) 个（已跳过）" }
+            phase = .batchDone(message)
+        }
+    }
+
     func cancel() {
         task?.cancel()
+    }
+
+    // MARK: 下载核心
+
+    private func startWork() {
+        task?.cancel()
+        phase = .downloading
+        progress = 0
+        sizeText = ""
+        copiedToClipboard = false
+        UIApplication.shared.isIdleTimerDisabled = true  // 下载时不自动锁屏
+    }
+
+    /// 下载一个视频（必要时合并），返回保存的文件
+    private func performDownload(
+        _ kind: DownloadOption.Kind, title: String, label: String?, start: Double, span: Double
+    ) async throws -> URL {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let tmp = fm.temporaryDirectory
+        let base = Self.safeFileName(title)
+        let prefix = label.map { "\($0)：" } ?? ""
+        var cleanup: [URL] = []
+
+        do {
+            let output: URL
+            switch kind {
+            case let .single(stream, ext):
+                output = Self.uniqueURL(docs.appendingPathComponent("\(base).\(ext)"))
+                cleanup = [output]
+                statusText = "\(prefix)正在下载…"
+                try await ChunkedDownloader.download(from: stream.url, to: output) { done, total in
+                    Task { @MainActor in self.report(done, total, start: start, span: span) }
+                }
+
+            case let .merge(video, audio):
+                let videoFile = tmp.appendingPathComponent(UUID().uuidString + ".mp4")
+                let audioFile = tmp.appendingPathComponent(UUID().uuidString + ".m4a")
+                output = Self.uniqueURL(docs.appendingPathComponent("\(base).mp4"))
+                cleanup = [videoFile, audioFile, output]
+
+                statusText = "\(prefix)正在下载画面…"
+                try await ChunkedDownloader.download(from: video.url, to: videoFile) { done, total in
+                    Task { @MainActor in self.report(done, total, start: start, span: span * 0.85) }
+                }
+                statusText = "\(prefix)正在下载声音…"
+                try await ChunkedDownloader.download(from: audio.url, to: audioFile) { done, total in
+                    Task { @MainActor in self.report(done, total, start: start + span * 0.85, span: span * 0.12) }
+                }
+                statusText = "\(prefix)正在合并…"
+                sizeText = ""
+                try await Merger.merge(video: videoFile, audio: audioFile, output: output)
+                try? fm.removeItem(at: videoFile)
+                try? fm.removeItem(at: audioFile)
+            }
+            return output
+        } catch {
+            cleanup.forEach { try? fm.removeItem(at: $0) }
+            throw error
+        }
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
     private func report(_ done: Int64, _ total: Int64?, start: Double, span: Double) {
@@ -216,7 +320,63 @@ final class DownloadManager: ObservableObject {
         return options
     }
 
+    /// 批量下载时，按画质偏好挑一个格式
+    static func pick(_ quality: Quality, from streams: [YouTubeKit.Stream]) -> DownloadOption.Kind? {
+        let audio = streams.filterAudioOnly()
+            .filter { $0.fileExtension == .m4a }
+            .highestAudioBitrateStream()
+        let progressive = streams.filterVideoAndAudio()
+            .filter { $0.isNativelyPlayable && $0.fileExtension == .mp4 }
+            .highestResolutionStream()
+        let videos = streams.filterVideoOnly()
+            .filter { isAVC($0) && $0.fileExtension == .mp4 }
+
+        func bestVideo(maxHeight: Int) -> YouTubeKit.Stream? {
+            videos.filter { ($0.videoResolution ?? 0) <= maxHeight }
+                .max { a, b in
+                    let ra = a.videoResolution ?? 0, rb = b.videoResolution ?? 0
+                    return ra != rb ? ra < rb : (a.bitrate ?? 0) < (b.bitrate ?? 0)
+                }
+        }
+
+        switch quality {
+        case .audio:
+            return audio.map { .single($0, ext: "m4a") }
+        case .fast:
+            if let progressive { return .single(progressive, ext: "mp4") }
+            if let audio, let v = bestVideo(maxHeight: 480) { return .merge(video: v, audio: audio) }
+            return nil
+        case .best, .hd720:
+            let limit = quality == .best ? Int.max : 720
+            if let audio, let v = bestVideo(maxHeight: limit),
+               (v.videoResolution ?? 0) > (progressive?.videoResolution ?? 0) {
+                return .merge(video: v, audio: audio)
+            }
+            return progressive.map { .single($0, ext: "mp4") }
+        }
+    }
+
     // MARK: 小工具
+
+    /// 从链接里取出视频 ID 和列表 ID
+    static func parseIDs(_ url: URL) -> (videoID: String?, listID: String?) {
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let query = comps?.queryItems ?? []
+        let listID = query.first { $0.name == "list" }?.value.flatMap { $0.isEmpty ? nil : $0 }
+        var videoID = query.first { $0.name == "v" }?.value
+        let host = url.host?.lowercased() ?? ""
+        let parts = url.pathComponents.filter { $0 != "/" }
+        if videoID == nil {
+            if host.contains("youtu.be"), let first = parts.first {
+                videoID = first
+            } else if let i = parts.firstIndex(where: { ["shorts", "live", "embed"].contains($0) }), i + 1 < parts.count {
+                videoID = parts[i + 1]
+            }
+        }
+        if let id = videoID, id.isEmpty { videoID = nil }
+        return (videoID, listID)
+    }
+
 
     static func extractURL(from text: String) -> URL? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
