@@ -30,12 +30,13 @@ enum Merger {
               let compAudio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
             throw Failure.exportFailed
         }
-        try compVideo.insertTimeRange(CMTimeRange(start: .zero, duration: videoDuration), of: videoTrack, at: .zero)
+        // YouTube 的画面文件头里写的时长有时是错的（比如多出一倍），
+        // 直接用会让最后一帧定格很久。所以画面和声音都按较短的那个长度裁剪。
+        let length = CMTimeMinimum(videoDuration, audioDuration)
+        let range = CMTimeRange(start: .zero, duration: length)
+        try compVideo.insertTimeRange(range, of: videoTrack, at: .zero)
         compVideo.preferredTransform = transform
-        try compAudio.insertTimeRange(
-            CMTimeRange(start: .zero, duration: CMTimeMinimum(videoDuration, audioDuration)),
-            of: audioTrack, at: .zero
-        )
+        try compAudio.insertTimeRange(range, of: audioTrack, at: .zero)
 
         guard let export = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
             throw Failure.exportFailed
