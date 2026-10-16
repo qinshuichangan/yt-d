@@ -1,0 +1,44 @@
+name: YTDownloader
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "16.0"
+
+packages:
+  YouTubeKit:
+    url: https://github.com/alexeichhorn/YouTubeKit
+    from: 0.4.9
+
+targets:
+  YTDownloader:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    dependencies:
+      - package: YouTubeKit
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: 视频下载
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        NSPhotoLibraryAddUsageDescription: 用于把下载的视频保存到相册
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.ytdownloader
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: ""
+
+schemes:
+  YTDownloader:
+    build:
+      targets:
+        YTDownloader: all
