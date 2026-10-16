@@ -18,6 +18,7 @@ enum ChunkedDownloader {
     static func download(
         from url: URL,
         to destination: URL,
+        headers: [String: String] = [:],
         progress: @escaping @Sendable (_ done: Int64, _ total: Int64?) -> Void
     ) async throws {
         let fm = FileManager.default
@@ -28,11 +29,13 @@ enum ChunkedDownloader {
 
         var offset: Int64 = 0
         var total: Int64?
+        var current = url  // 跳转后的真实地址，后面的分块直接请求它
 
         while true {
             try Task.checkCancellation()
 
-            var request = URLRequest(url: url)
+            var request = URLRequest(url: current)
+            headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
             request.setValue("bytes=\(offset)-\(offset + chunkSize - 1)", forHTTPHeaderField: "Range")
             request.timeoutInterval = 60
 
@@ -40,6 +43,7 @@ enum ChunkedDownloader {
             guard let http = response as? HTTPURLResponse else {
                 throw URLError(.badServerResponse)
             }
+            if let final = http.url { current = final }
             if http.statusCode == 416 { break }  // 已经到文件末尾
             guard http.statusCode == 200 || http.statusCode == 206 else {
                 throw Failure.http(http.statusCode)

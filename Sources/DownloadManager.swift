@@ -11,6 +11,8 @@ struct AppError: LocalizedError {
 struct FailedDownload: Identifiable {
     let item: PlaylistItem
     let reason: String
+    /// 重试有没有意义（会员专享、私人视频等重试也没用）
+    let retryable: Bool
     var id: String { item.id }
 }
 
@@ -18,12 +20,16 @@ struct VideoInfo {
     let title: String
     let thumbnail: URL?
     let options: [DownloadOption]
+    /// 和视频一起保存的文字说明（抖音作品用）
+    var note: String? = nil
 }
 
 struct DownloadOption: Identifiable {
     enum Kind {
         case single(YouTubeKit.Stream, ext: String)
         case merge(video: YouTubeKit.Stream, audio: YouTubeKit.Stream)
+        /// 直接下载一个地址（抖音等）
+        case direct(URL, ext: String, headers: [String: String])
     }
     let id = UUID()
     let label: String
@@ -88,6 +94,11 @@ final class DownloadManager: ObservableObject {
         failedDownloads = []
         phase = .fetching
 
+        if DouyinFetcher.isDouyin(url) {
+            fetchDouyin(url)
+            return
+        }
+
         task = Task {
             var lastError: Error?
 
@@ -129,7 +140,36 @@ final class DownloadManager: ObservableObject {
             if info != nil || playlist != nil {
                 phase = .ready
             } else {
-                phase = .failed("解析失败：\(lastError?.localizedDescription ?? "未知错误")")
+                phase = .failed("解析失败：\(lastError.map { ErrorText.describe($0).text } ?? "未知错误")")
+            }
+        }
+    }
+
+    private func fetchDouyin(_ url: URL) {
+        task = Task {
+            do {
+                let result = try await DouyinFetcher.fetch(url)
+                var options: [DownloadOption] = []
+                if let clean = result.noWatermark {
+                    options.append(DownloadOption(
+                        label: "无水印原画",
+                        detail: "直接下载 mp4，同时保存作品说明",
+                        kind: .direct(clean, ext: "mp4", headers: DouyinFetcher.headers)
+                    ))
+                }
+                if let marked = result.watermarked, marked != result.noWatermark {
+                    options.append(DownloadOption(
+                        label: "带水印版本（备用）",
+                        detail: "无水印下载失败时用这个",
+                        kind: .direct(marked, ext: "mp4", headers: DouyinFetcher.headers)
+                    ))
+                }
+                guard !options.isEmpty else { throw DouyinFetcher.Failure.noData }
+                info = VideoInfo(title: result.title, thumbnail: result.cover, options: options, note: result.note)
+                phase = .ready
+            } catch {
+                if Task.isCancelled { return }
+                phase = .failed("解析失败：\(ErrorText.describe(error).text)")
             }
         }
     }
@@ -144,6 +184,11 @@ final class DownloadManager: ObservableObject {
             defer { UIApplication.shared.isIdleTimerDisabled = false }
             do {
                 let output = try await performDownload(option.kind, title: info.title, label: nil, start: 0, span: 1)
+                if let note = info.note {
+                    // 作品说明存成同名 .txt，放在视频旁边
+                    let noteURL = output.deletingPathExtension().appendingPathExtension("txt")
+                    try? note.write(to: noteURL, atomically: true, encoding: .utf8)
+                }
                 progress = 1
                 if UserDefaults.standard.bool(forKey: Clipboard.autoCopyKey) {
                     copiedToClipboard = Clipboard.copyFile(output)
@@ -153,7 +198,7 @@ final class DownloadManager: ObservableObject {
                 if Self.isCancellation(error) {
                     phase = .ready
                 } else {
-                    phase = .failed("下载失败：\(error.localizedDescription)")
+                    phase = .failed("下载失败：\(ErrorText.describe(error).text)")
                 }
             }
         }
@@ -186,7 +231,7 @@ final class DownloadManager: ObservableObject {
 
     /// 只重新下载上次失败的视频
     func retryFailed(_ quality: Quality) {
-        runBatch(failedDownloads.map(\.item), quality: quality)
+        runBatch(failedDownloads.filter(\.retryable).map(\.item), quality: quality)
     }
 
     private func runBatch(_ items: [PlaylistItem], quality: Quality) {
@@ -218,7 +263,8 @@ final class DownloadManager: ObservableObject {
                 } catch {
                     if Self.isCancellation(error) { cancelled = true; break }
                     // 失败的先记下来，继续下一个
-                    failed.append(FailedDownload(item: item, reason: error.localizedDescription))
+                    let described = ErrorText.describe(error)
+                    failed.append(FailedDownload(item: item, reason: described.text, retryable: described.retryable))
                 }
             }
 
@@ -265,6 +311,18 @@ final class DownloadManager: ObservableObject {
                 statusText = "\(prefix)正在下载…"
                 try await ChunkedDownloader.download(from: stream.url, to: output) { done, total in
                     Task { @MainActor in self.report(done, total, start: start, span: span) }
+                }
+
+            case let .direct(url, ext, headers):
+                output = Self.uniqueURL(docs.appendingPathComponent("\(base).\(ext)"))
+                cleanup = [output]
+                statusText = "\(prefix)正在下载…"
+                try await ChunkedDownloader.download(from: url, to: output, headers: headers) { done, total in
+                    Task { @MainActor in self.report(done, total, start: start, span: span) }
+                }
+                // 确认下到的是视频，而不是一个错误网页
+                guard Self.looksLikeMP4(output) else {
+                    throw AppError("下载到的不是视频文件，换另一个选项试试")
                 }
 
             case let .merge(video, audio):
@@ -400,6 +458,14 @@ final class DownloadManager: ObservableObject {
 
     // MARK: 小工具
 
+    /// mp4 文件的第 4～8 个字节是 "ftyp"
+    static func looksLikeMP4(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 12), head.count >= 8 else { return false }
+        return head.subdata(in: 4..<8) == Data("ftyp".utf8)
+    }
+
     /// 从链接里取出视频 ID 和列表 ID
     static func parseIDs(_ url: URL) -> (videoID: String?, listID: String?) {
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
@@ -422,7 +488,7 @@ final class DownloadManager: ObservableObject {
 
     static func extractURL(from text: String) -> URL? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let range = trimmed.range(of: "https?://\\S+", options: .regularExpression) {
+        if let range = trimmed.range(of: "https?://[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]+", options: .regularExpression) {
             return URL(string: String(trimmed[range]))
         }
         // 只粘贴了视频 ID 的情况

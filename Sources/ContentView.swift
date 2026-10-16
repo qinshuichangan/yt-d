@@ -60,16 +60,19 @@ struct ContentView: View {
                                     Text(failed.reason).font(.caption).foregroundStyle(.red).lineLimit(3)
                                 }
                             }
-                            Button {
-                                manager.retryFailed(playlistQuality)
-                            } label: {
-                                Label("重试这 \(manager.failedDownloads.count) 个", systemImage: "arrow.clockwise")
+                            let retryCount = manager.failedDownloads.filter(\.retryable).count
+                            if retryCount > 0 {
+                                Button {
+                                    manager.retryFailed(playlistQuality)
+                                } label: {
+                                    Label("重试这 \(retryCount) 个", systemImage: "arrow.clockwise")
+                                }
+                                .disabled(manager.isBusy)
                             }
-                            .disabled(manager.isBusy)
                         } header: {
                             Text("下载失败的视频")
                         } footer: {
-                            Text("重试会用上面选的画质。如果一直失败，可以换「快速」画质再试。")
+                            Text("会员专享、私人、已删除的视频重试也没用，不会参与重试。其他的重试会用上面选的画质，一直失败的话可以换「快速」再试。")
                         }
                     }
                 }
@@ -128,7 +131,7 @@ struct ContentView: View {
 
     private var inputSection: some View {
         Section {
-            TextField("粘贴 YouTube 链接", text: $link, axis: .vertical)
+            TextField("粘贴 YouTube 或抖音链接", text: $link, axis: .vertical)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -153,7 +156,7 @@ struct ContentView: View {
             }
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
-                Text("在 YouTube App 里点「分享」→「复制链接」，再回来点「粘贴」。")
+                Text("在 YouTube 或抖音里点「分享」→「复制链接」，再回来点「粘贴」。")
                 Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
             }
         }

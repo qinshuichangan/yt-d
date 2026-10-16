@@ -25,7 +25,11 @@ struct LibraryView: View {
                 }
             }
             .onDelete { indexSet in
-                for i in indexSet { try? FileManager.default.removeItem(at: files[i]) }
+                for i in indexSet {
+                    try? FileManager.default.removeItem(at: files[i])
+                    // 一起删掉同名的作品说明
+                    try? FileManager.default.removeItem(at: files[i].deletingPathExtension().appendingPathExtension("txt"))
+                }
                 reload()
             }
         }
