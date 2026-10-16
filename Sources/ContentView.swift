@@ -80,7 +80,10 @@ struct ContentView: View {
                 .disabled(link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || manager.isBusy)
             }
         } footer: {
-            Text("在 YouTube App 里点「分享」→「复制链接」，再回来点「粘贴」。")
+            VStack(alignment: .leading, spacing: 6) {
+                Text("在 YouTube App 里点「分享」→「复制链接」，再回来点「粘贴」。")
+                Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
+            }
         }
     }
 
