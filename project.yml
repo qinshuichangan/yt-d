@@ -20,9 +20,12 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: 视频下载
-        CFBundleShortVersionString: "1.05"
-        CFBundleVersion: "6"
+        CFBundleShortVersionString: "1.15"
+        CFBundleVersion: "7"
         UILaunchScreen: {}
+        CFBundleURLTypes:
+          - CFBundleURLName: com.example.ytdownloader
+            CFBundleURLSchemes: [ytdl]
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         NSPhotoLibraryAddUsageDescription: 用于把下载的视频保存到相册

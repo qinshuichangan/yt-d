@@ -40,6 +40,7 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("视频下载")
+            .onOpenURL(perform: handleIncoming)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink {
@@ -49,6 +50,30 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: 从快捷指令打开（ytdl://download?url=...）
+
+    private func handleIncoming(_ url: URL) {
+        guard url.scheme?.lowercased() == "ytdl" else { return }
+        var text: String?
+        if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           let value = comps.queryItems?.first(where: { $0.name == "url" })?.value,
+           !value.isEmpty {
+            text = value
+        } else {
+            // 兼容 ytdl://https://... 这种直接拼接的写法
+            let raw = url.absoluteString.dropFirst("ytdl://".count)
+            text = String(raw).removingPercentEncoding ?? String(raw)
+        }
+        guard let text, !text.isEmpty else { return }
+        link = text
+        linkFocused = false
+        photoMessage = nil
+        // 正在下载时只填入链接，不打断当前下载
+        if !manager.isDownloading {
+            manager.fetch(text)
         }
     }
 
