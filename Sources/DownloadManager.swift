@@ -35,6 +35,7 @@ final class DownloadManager: ObservableObject {
     @Published var progress: Double = 0
     @Published var statusText = ""
     @Published var sizeText = ""
+    @Published var copiedToClipboard = false
 
     private var task: Task<Void, Never>?
 
@@ -89,6 +90,7 @@ final class DownloadManager: ObservableObject {
         phase = .downloading
         progress = 0
         sizeText = ""
+        copiedToClipboard = false
         UIApplication.shared.isIdleTimerDisabled = true  // 下载时不自动锁屏
 
         task = Task {
@@ -131,6 +133,9 @@ final class DownloadManager: ObservableObject {
                     try? fm.removeItem(at: audioFile)
                 }
                 progress = 1
+                if UserDefaults.standard.bool(forKey: Clipboard.autoCopyKey) {
+                    copiedToClipboard = Clipboard.copyFile(output)
+                }
                 phase = .finished(output)
             } catch {
                 cleanup.forEach { try? fm.removeItem(at: $0) }

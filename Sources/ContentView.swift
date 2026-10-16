@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var link = ""
     @State private var photoMessage: String?
     @FocusState private var linkFocused: Bool
+    @AppStorage(Clipboard.autoCopyKey) private var autoCopy = false
 
     var body: some View {
         NavigationStack {
@@ -37,6 +38,12 @@ struct ContentView: View {
                     Section {
                         Text(message).foregroundStyle(.red)
                     }
+                }
+
+                Section {
+                    Toggle("下载完成后自动复制到剪贴板", isOn: $autoCopy)
+                } footer: {
+                    Text("打开后，下载完成就能直接去微信等 App 里粘贴发送。")
                 }
             }
             .navigationTitle("视频下载")
@@ -182,8 +189,16 @@ struct ContentView: View {
                     Label("存到相册", systemImage: "photo.badge.plus")
                 }
             }
+            Button {
+                photoMessage = Clipboard.copyFile(url) ? "已复制到剪贴板，去微信里粘贴就行" : "复制失败"
+            } label: {
+                Label("复制到剪贴板", systemImage: "doc.on.doc")
+            }
             ShareLink(item: url) {
                 Label("分享 / 存到其他地方", systemImage: "square.and.arrow.up")
+            }
+            if manager.copiedToClipboard && photoMessage == nil {
+                Text("已自动复制到剪贴板，去微信里粘贴就行").font(.callout)
             }
             if let photoMessage {
                 Text(photoMessage).font(.callout)

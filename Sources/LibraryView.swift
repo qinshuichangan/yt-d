@@ -87,6 +87,11 @@ struct PlayerView: View {
                         Image(systemName: "photo.badge.plus")
                     }
                 }
+                Button {
+                    message = Clipboard.copyFile(url) ? "已复制到剪贴板" : "复制失败"
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
                 ShareLink(item: url)
             }
         }
