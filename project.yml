@@ -20,8 +20,8 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: 视频下载
-        CFBundleShortVersionString: "1.03"
-        CFBundleVersion: "4"
+        CFBundleShortVersionString: "1.04"
+        CFBundleVersion: "5"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
