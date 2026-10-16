@@ -53,31 +53,58 @@ enum PlaylistFetcher {
     // MARK: 普通列表
 
     private static func fetchPlaylist(listID: String) async throws -> PlaylistInfo {
-        var json = try await post("browse", ["context": context, "browseId": "VL" + listID])
-
         var title: String?
-        if let meta = findDict(json, key: "playlistMetadataRenderer") {
-            title = meta["title"] as? String
+        var items: [PlaylistItem] = []
+
+        // 方法一：列表页接口（新旧两种格式都认）
+        do {
+            var json = try await post("browse", ["context": context, "browseId": "VL" + listID])
+            title = playlistTitle(fromBrowse: json)
+            collectBrowseItems(json, into: &items)
+
+            var seenTokens = Set<String>()
+            var pages = 0
+            while pages < maxPages, let token = findContinuationToken(json, excluding: seenTokens) {
+                try Task.checkCancellation()
+                seenTokens.insert(token)
+                pages += 1
+                json = try await post("browse", ["context": context, "continuation": token])
+                let before = items.count
+                collectBrowseItems(json, into: &items)
+                if items.count == before { break }
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // 忽略，下面换方法二
         }
 
-        var items: [PlaylistItem] = []
-        collect(json, key: "playlistVideoRenderer", into: &items)
-
-        var seenTokens = Set<String>()
-        var pages = 0
-        while pages < maxPages, let token = findContinuationToken(json, excluding: seenTokens) {
-            try Task.checkCancellation()
-            seenTokens.insert(token)
-            pages += 1
-            json = try await post("browse", ["context": context, "continuation": token])
-            let before = items.count
-            collect(json, key: "playlistVideoRenderer", into: &items)
-            if items.count == before { break }
+        // 方法二：播放页右侧的列表面板（和合辑用的是同一个接口），一段一段往后翻
+        if items.isEmpty {
+            let viaNext = try await fetchViaNext(listID: listID, seedVideoID: nil, paginate: true)
+            items = viaNext.items
+            if title == nil { title = viaNext.title }
         }
 
         let unique = dedupe(items)
         guard !unique.isEmpty else { throw Failure.empty }
         return PlaylistInfo(id: listID, title: title ?? "播放列表", items: unique, isMix: false)
+    }
+
+    private static func collectBrowseItems(_ json: Any, into items: inout [PlaylistItem]) {
+        collect(json, key: "playlistVideoRenderer", into: &items)
+        collectLockups(json, into: &items)
+    }
+
+    private static func playlistTitle(fromBrowse json: Any) -> String? {
+        if let meta = findDict(json, key: "playlistMetadataRenderer"), let t = meta["title"] as? String {
+            return t
+        }
+        if let header = findDict(json, key: "pageHeaderViewModel"),
+           let t = findDict(header, key: "title")?["content"] as? String {
+            return t
+        }
+        return nil
     }
 
     // MARK: 自动合辑（Mix）
@@ -88,25 +115,50 @@ enum PlaylistFetcher {
             // RD + 11 位视频 ID：合辑是以这个视频为起点生成的
             seed = String(listID.dropFirst(2))
         }
-        var body: [String: Any] = ["context": context, "playlistId": listID]
-        if let seed { body["videoId"] = seed }
+        // 合辑是无限延伸的，只读第一段
+        let result = try await fetchViaNext(listID: listID, seedVideoID: seed, paginate: false)
+        guard !result.items.isEmpty else { throw Failure.empty }
+        return PlaylistInfo(id: listID, title: result.title ?? "合辑", items: result.items, isMix: true)
+    }
 
-        let json = try await post("next", body)
+    // MARK: 播放页右侧的列表面板
 
-        // 只在播放列表面板里找，避免把旁边的推荐视频也算进去
-        let panel: Any = findDict(json, key: "twoColumnWatchNextResults").flatMap { findDict($0, key: "playlist") } ?? json
+    private static func fetchViaNext(
+        listID: String, seedVideoID: String?, paginate: Bool
+    ) async throws -> (title: String?, items: [PlaylistItem]) {
         var items: [PlaylistItem] = []
-        collect(panel, key: "playlistPanelVideoRenderer", into: &items)
-
+        var seen = Set<String>()
         var title: String?
-        if let dict = panel as? [String: Any] {
-            title = dict["title"] as? String
-                ?? (dict["playlist"] as? [String: Any])?["title"] as? String
-        }
+        var seed = seedVideoID
+        var index: Int?
 
-        let unique = dedupe(items)
-        guard !unique.isEmpty else { throw Failure.empty }
-        return PlaylistInfo(id: listID, title: title ?? "合辑", items: unique, isMix: true)
+        for _ in 0..<maxPages {
+            try Task.checkCancellation()
+            var body: [String: Any] = ["context": context, "playlistId": listID]
+            if let seed { body["videoId"] = seed }
+            if let index { body["playlistIndex"] = index }
+
+            let json = try await post("next", body)
+            // 只在播放列表面板里找，避免把旁边的推荐视频也算进去
+            let panel: Any = findDict(json, key: "twoColumnWatchNextResults")
+                .flatMap { findDict($0, key: "playlist") } ?? json
+
+            if title == nil, let dict = panel as? [String: Any] {
+                title = dict["title"] as? String
+                    ?? (dict["playlist"] as? [String: Any])?["title"] as? String
+            }
+
+            var page: [PlaylistItem] = []
+            collect(panel, key: "playlistPanelVideoRenderer", into: &page)
+            let fresh = page.filter { seen.insert($0.videoID).inserted }
+            items.append(contentsOf: fresh)
+
+            guard paginate, !fresh.isEmpty, let last = items.last else { break }
+            // 从目前读到的最后一个视频继续往后翻
+            seed = last.videoID
+            index = items.count - 1
+        }
+        return (title, items)
     }
 
     // MARK: 网络
@@ -144,6 +196,24 @@ enum PlaylistFetcher {
             for value in dict.values { collect(value, key: key, into: &items) }
         } else if let array = node as? [Any] {
             for value in array { collect(value, key: key, into: &items) }
+        }
+    }
+
+    /// YouTube 新版列表页的视频条目（lockupViewModel）
+    private static func collectLockups(_ node: Any, into items: inout [PlaylistItem]) {
+        if let dict = node as? [String: Any] {
+            if let lockup = dict["lockupViewModel"] as? [String: Any] {
+                let type = lockup["contentType"] as? String ?? ""
+                if type.contains("VIDEO"), let id = lockup["contentId"] as? String {
+                    let title = findDict(lockup, key: "lockupMetadataViewModel")
+                        .flatMap { ($0["title"] as? [String: Any])?["content"] as? String }
+                    items.append(PlaylistItem(videoID: id, title: title ?? id))
+                }
+                return
+            }
+            for value in dict.values { collectLockups(value, into: &items) }
+        } else if let array = node as? [Any] {
+            for value in array { collectLockups(value, into: &items) }
         }
     }
 
