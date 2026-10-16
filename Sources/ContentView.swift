@@ -7,6 +7,7 @@ struct ContentView: View {
     @FocusState private var linkFocused: Bool
     @AppStorage(Clipboard.autoCopyKey) private var autoCopy = false
     @AppStorage("playlistQuality") private var playlistQuality: DownloadManager.Quality = .best
+    @State private var showPlaylistItems = true
 
     var body: some View {
         NavigationStack {
@@ -41,12 +42,34 @@ struct ContentView: View {
 
                 if let message = manager.batchMessage {
                     Section {
-                        Label(message, systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
+                        Label(message, systemImage: manager.failedDownloads.isEmpty
+                              ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(manager.failedDownloads.isEmpty ? .green : .orange)
                         NavigationLink {
                             LibraryView()
                         } label: {
                             Label("去「已下载」查看", systemImage: "folder")
+                        }
+                    }
+
+                    if !manager.failedDownloads.isEmpty {
+                        Section {
+                            ForEach(manager.failedDownloads) { failed in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(failed.item.title).font(.callout).lineLimit(2)
+                                    Text(failed.reason).font(.caption).foregroundStyle(.red).lineLimit(3)
+                                }
+                            }
+                            Button {
+                                manager.retryFailed(playlistQuality)
+                            } label: {
+                                Label("重试这 \(manager.failedDownloads.count) 个", systemImage: "arrow.clockwise")
+                            }
+                            .disabled(manager.isBusy)
+                        } header: {
+                            Text("下载失败的视频")
+                        } footer: {
+                            Text("重试会用上面选的画质。如果一直失败，可以换「快速」画质再试。")
                         }
                     }
                 }
@@ -147,12 +170,35 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
 
-            DisclosureGroup("查看列表") {
-                ForEach(Array(playlist.items.enumerated()), id: \.element.id) { index, item in
-                    Text("\(index + 1). \(item.title)")
-                        .font(.callout)
-                        .lineLimit(2)
+            DisclosureGroup(isExpanded: $showPlaylistItems) {
+                HStack {
+                    Button("全选") { manager.selectAll(true) }
+                    Spacer()
+                    Button("全不选") { manager.selectAll(false) }
                 }
+                .buttonStyle(.borderless)
+                .font(.callout)
+
+                ForEach(Array(playlist.items.enumerated()), id: \.element.id) { index, item in
+                    Button {
+                        manager.toggleSelection(item)
+                    } label: {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: manager.selectedIDs.contains(item.videoID)
+                                  ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(manager.selectedIDs.contains(item.videoID)
+                                                 ? Color.accentColor : Color.secondary)
+                            Text("\(index + 1). \(item.title)")
+                                .font(.callout)
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                        }
+                    }
+                    .disabled(manager.isBusy)
+                }
+            } label: {
+                Text("选择要下载的视频（已选 \(manager.selectedIDs.count)/\(playlist.items.count)）")
             }
 
             Picker("画质", selection: $playlistQuality) {
@@ -165,13 +211,13 @@ struct ContentView: View {
                 photoMessage = nil
                 manager.downloadPlaylist(playlistQuality)
             } label: {
-                Label("全部下载（\(playlist.items.count) 个）", systemImage: "square.and.arrow.down.on.square")
+                Label("下载选中的（\(manager.selectedIDs.count) 个）", systemImage: "square.and.arrow.down.on.square")
             }
-            .disabled(manager.isBusy)
+            .disabled(manager.isBusy || manager.selectedIDs.isEmpty)
         } header: {
             Text("播放列表")
         } footer: {
-            Text("会一个接一个依次下载，下载时请留在 App 里。下载失败的视频会自动跳过。")
+            Text("会一个接一个依次下载，下载时请留在 App 里。失败的会先跳过，最后可以重试。")
         }
     }
 

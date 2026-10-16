@@ -8,6 +8,12 @@ struct AppError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+struct FailedDownload: Identifiable {
+    let item: PlaylistItem
+    let reason: String
+    var id: String { item.id }
+}
+
 struct VideoInfo {
     let title: String
     let thumbnail: URL?
@@ -53,6 +59,8 @@ final class DownloadManager: ObservableObject {
     @Published var statusText = ""
     @Published var sizeText = ""
     @Published var copiedToClipboard = false
+    @Published var selectedIDs: Set<String> = []
+    @Published var failedDownloads: [FailedDownload] = []
 
     private var task: Task<Void, Never>?
 
@@ -76,6 +84,8 @@ final class DownloadManager: ObservableObject {
         task?.cancel()
         info = nil
         playlist = nil
+        selectedIDs = []
+        failedDownloads = []
         phase = .fetching
 
         task = Task {
@@ -84,7 +94,9 @@ final class DownloadManager: ObservableObject {
             // 链接里有 list= 就读取播放列表
             if let listID = ids.listID {
                 do {
-                    playlist = try await PlaylistFetcher.fetch(listID: listID, seedVideoID: ids.videoID)
+                    let loaded = try await PlaylistFetcher.fetch(listID: listID, seedVideoID: ids.videoID)
+                    playlist = loaded
+                    selectedIDs = Set(loaded.items.map(\.videoID))  // 默认全选
                 } catch {
                     lastError = error
                 }
@@ -147,18 +159,46 @@ final class DownloadManager: ObservableObject {
         }
     }
 
-    // MARK: 下载整个播放列表
+    // MARK: 播放列表：选择
 
+    var selectedItems: [PlaylistItem] {
+        playlist?.items.filter { selectedIDs.contains($0.videoID) } ?? []
+    }
+
+    func toggleSelection(_ item: PlaylistItem) {
+        if selectedIDs.contains(item.videoID) {
+            selectedIDs.remove(item.videoID)
+        } else {
+            selectedIDs.insert(item.videoID)
+        }
+    }
+
+    func selectAll(_ on: Bool) {
+        selectedIDs = on ? Set(playlist?.items.map(\.videoID) ?? []) : []
+    }
+
+    // MARK: 播放列表：下载
+
+    /// 下载选中的视频
     func downloadPlaylist(_ quality: Quality) {
-        guard let playlist else { return }
+        runBatch(selectedItems, quality: quality)
+    }
+
+    /// 只重新下载上次失败的视频
+    func retryFailed(_ quality: Quality) {
+        runBatch(failedDownloads.map(\.item), quality: quality)
+    }
+
+    private func runBatch(_ items: [PlaylistItem], quality: Quality) {
+        guard !items.isEmpty else { return }
         startWork()
+        failedDownloads = []
 
         task = Task {
             defer { UIApplication.shared.isIdleTimerDisabled = false }
-            let items = playlist.items
             let count = Double(items.count)
             var succeeded = 0
-            var failed = 0
+            var failed: [FailedDownload] = []
             var cancelled = false
 
             for (index, item) in items.enumerated() {
@@ -177,13 +217,15 @@ final class DownloadManager: ObservableObject {
                     succeeded += 1
                 } catch {
                     if Self.isCancellation(error) { cancelled = true; break }
-                    failed += 1  // 失败的跳过，继续下一个
+                    // 失败的先记下来，继续下一个
+                    failed.append(FailedDownload(item: item, reason: error.localizedDescription))
                 }
             }
 
+            failedDownloads = failed
             progress = 1
-            var message = cancelled ? "已取消，完成 \(succeeded) 个" : "全部完成：成功 \(succeeded) 个"
-            if failed > 0 { message += "，失败 \(failed) 个（已跳过）" }
+            var message = cancelled ? "已取消，完成 \(succeeded) 个" : "下载完成：成功 \(succeeded) 个"
+            if !failed.isEmpty { message += "，失败 \(failed.count) 个" }
             phase = .batchDone(message)
         }
     }
