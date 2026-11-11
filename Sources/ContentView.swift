@@ -10,6 +10,7 @@ struct ContentView: View {
     @AppStorage(DownloadManager.autoDownloadKey) private var autoDownload = false
     @AppStorage(DownloadManager.autoSavePhotosKey) private var autoSavePhotos = false
     @AppStorage(DownloadManager.autoReadClipboardKey) private var autoReadClipboard = false
+    @AppStorage(DownloadManager.queueModeKey) private var queueMode = false
     @AppStorage(ChunkedDownloader.threadsKey) private var threads = ChunkedDownloader.threadCount
     @Environment(\.scenePhase) private var scenePhase
     @State private var lastPasteboardChange = -1
@@ -83,6 +84,10 @@ struct ContentView: View {
                     }
                 }
 
+                if queueMode || !manager.queue.isEmpty || manager.currentJob != nil || !manager.queueRecords.isEmpty {
+                    queueSection
+                }
+
                 if let message = manager.errorMessage {
                     Section {
                         Text(message).foregroundStyle(.red)
@@ -95,6 +100,7 @@ struct ContentView: View {
                     } label: {
                         Label("登录网站（小红书、B站）", systemImage: "person.crop.circle")
                     }
+                    Toggle("队列模式", isOn: $queueMode)
                     Toggle("自动读取剪贴板里的链接", isOn: $autoReadClipboard)
                     Toggle("粘贴链接后自动下载", isOn: $autoDownload)
                     Picker("默认画质", selection: $playlistQuality) {
@@ -130,7 +136,7 @@ struct ContentView: View {
                 } header: {
                     Text("设置")
                 } footer: {
-                    Text("登录网站：小红书在海外经常要求登录；B站登录后能下 1080p。\n自动读取剪贴板：打开 App 时，如果剪贴板里是 YouTube、抖音、TikTok、B站、小红书、X 的链接，就自动填进来。iOS 每次会问「允许粘贴吗」，不想被问可以去 设置 → 视频下载 → 从其他 App 粘贴 → 允许。\n自动下载：点「粘贴」或从分享菜单打开后，直接下载单个视频（YouTube 按默认画质，其他网站下载第一个选项，一般是无水印原画）。播放列表仍会先列出来让你勾选。\n自动保存到相册：音频文件不会存进相册。\n下载线程数：大于 1 时同时开多条连接分段下载，抖音等单条连接被限速时会快很多。一般 4～16 就够了，开太多可能被服务器拒绝、也更费电；出现下载失败就调小再试（1 = 单线程）。")
+                    Text("登录网站：小红书在海外经常要求登录；B站登录后能下 1080p。\n队列模式：正在下载时，新的链接（自动读取剪贴板、粘贴、分享菜单）会排队，下完一个自动开始下一个；队列里的都会自动下载（YouTube 用默认画质，其他网站用第一个选项）。建议同时打开「自动读取剪贴板里的链接」，这样复制完链接回到 App 就会自动加进队列。\n自动读取剪贴板：打开 App 时，如果剪贴板里是 YouTube、抖音、TikTok、B站、小红书、X 的链接，就自动填进来。iOS 每次会问「允许粘贴吗」，不想被问可以去 设置 → 视频下载 → 从其他 App 粘贴 → 允许。\n自动下载：点「粘贴」或从分享菜单打开后，直接下载单个视频（YouTube 按默认画质，其他网站下载第一个选项，一般是无水印原画）。播放列表仍会先列出来让你勾选。\n自动保存到相册：音频文件不会存进相册。\n下载线程数：大于 1 时同时开多条连接分段下载，抖音等单条连接被限速时会快很多。一般 4～16 就够了，开太多可能被服务器拒绝、也更费电；出现下载失败就调小再试（1 = 单线程）。")
                 }
             }
             .navigationTitle("视频下载")
@@ -154,7 +160,7 @@ struct ContentView: View {
     // MARK: 自动读取剪贴板
 
     private func checkClipboard() {
-        guard autoReadClipboard, !manager.isBusy else { return }
+        guard autoReadClipboard, queueMode || !manager.isBusy else { return }
         let pasteboard = UIPasteboard.general
         let count = pasteboard.changeCount
         guard count != lastPasteboardChange else { return }  // 同一次复制只处理一次
@@ -167,11 +173,11 @@ struct ContentView: View {
                       let text = pasteboard.string,
                       let url = DownloadManager.extractURL(from: text),
                       DownloadManager.isSupportedLink(url),
-                      !manager.isBusy else { return }
-                link = text
+                      queueMode || !manager.isBusy else { return }
                 linkFocused = false
                 photoMessage = nil
-                manager.fetch(text, autoDownload: autoDownload)
+                if !manager.isBusy { link = text }
+                manager.submit(text, autoDownload: autoDownload)
             }
         }
     }
@@ -194,8 +200,10 @@ struct ContentView: View {
         link = text
         linkFocused = false
         photoMessage = nil
-        // 正在下载时只填入链接，不打断当前下载
-        if !manager.isDownloading {
+        if queueMode {
+            manager.submit(text, autoDownload: autoDownload)
+        } else if !manager.isDownloading {
+            // 正在下载时只填入链接，不打断当前下载
             manager.fetch(text, autoDownload: autoDownload)
         }
     }
@@ -212,6 +220,13 @@ struct ContentView: View {
             HStack {
                 Button {
                     if let text = UIPasteboard.general.string {
+                        if queueMode {
+                            if !manager.isBusy { link = text }
+                            linkFocused = false
+                            photoMessage = nil
+                            manager.submit(text, autoDownload: true)
+                            return
+                        }
                         link = text
                         if autoDownload {
                             linkFocused = false
@@ -226,18 +241,77 @@ struct ContentView: View {
 
                 Spacer()
 
-                Button("解析") {
+                Button(queueMode && (manager.isBusy || manager.currentJob != nil) ? "加入队列" : "解析") {
                     linkFocused = false
                     photoMessage = nil
-                    manager.fetch(link, autoDownload: autoDownload)
+                    manager.submit(link, autoDownload: autoDownload)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || manager.isBusy)
+                .disabled(link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || (manager.isBusy && !queueMode))
             }
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 Text("支持 YouTube、抖音、TikTok、B站、小红书、X（推特），其他网站也会尝试从网页里找视频。在 App 里点「分享」→「复制链接」，再回来点「粘贴」。")
                 Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
+            }
+        }
+    }
+
+    // MARK: 队列
+
+    private var queueSection: some View {
+        Section {
+            if let job = manager.currentJob {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("正在处理").font(.caption).foregroundStyle(.secondary)
+                        Text(manager.info?.title ?? job.label).font(.callout).lineLimit(2)
+                    }
+                }
+            }
+            if manager.queue.isEmpty && manager.currentJob == nil {
+                Text("队列是空的。复制链接回到 App，或点「粘贴」，就会自动开始下载。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(Array(manager.queue.enumerated()), id: \.element.id) { index, item in
+                HStack(alignment: .top, spacing: 10) {
+                    Text("\(index + 1)").font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    Text(item.label).font(.callout).lineLimit(2)
+                }
+            }
+            .onDelete(perform: manager.removeFromQueue)
+
+            if !manager.queue.isEmpty {
+                Button("清空等待中的（\(manager.queue.count) 个）", role: .destructive) { manager.clearQueue() }
+            }
+
+            if !manager.queueRecords.isEmpty {
+                DisclosureGroup("已处理 \(manager.queueRecords.count) 个（成功 \(manager.queueSuccessCount) 个）") {
+                    ForEach(manager.queueRecords) { record in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: record.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(record.ok ? .green : .red)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(record.title).font(.callout).lineLimit(2)
+                                Text(record.message).font(.caption)
+                                    .foregroundStyle(record.ok ? Color.secondary : Color.red)
+                                    .lineLimit(3)
+                            }
+                        }
+                    }
+                    Button("清空记录") { manager.clearQueueRecords() }
+                }
+            }
+        } header: {
+            Text("下载队列")
+        } footer: {
+            if let notice = manager.queueNotice {
+                Text(notice)
+            } else {
+                Text("左滑可以删除等待中的链接。点「取消」只跳过当前这个，队列会继续。")
             }
         }
     }

@@ -60,7 +60,9 @@ final class DownloadManager: ObservableObject {
         var id: String { rawValue }
     }
 
-    @Published var phase: Phase = .idle
+    @Published var phase: Phase = .idle {
+        didSet { phaseChanged() }
+    }
     @Published var info: VideoInfo?
     @Published var playlist: PlaylistInfo?
     @Published var progress: Double = 0
@@ -77,6 +79,34 @@ final class DownloadManager: ObservableObject {
     static let autoSavePhotosKey = "autoSaveToPhotos"
     static let qualityKey = "playlistQuality"
     static let autoReadClipboardKey = "autoReadClipboard"
+    static let queueModeKey = "queueMode"
+    static var queueMode: Bool { UserDefaults.standard.bool(forKey: queueModeKey) }
+
+    // MARK: 队列模式
+
+    struct QueueItem: Identifiable {
+        let id = UUID()
+        let text: String
+        let url: URL
+        let label: String
+    }
+
+    struct QueueRecord: Identifiable {
+        let id = UUID()
+        let title: String
+        let ok: Bool
+        let message: String
+    }
+
+    /// 等待下载的链接
+    @Published var queue: [QueueItem] = []
+    /// 正在处理的队列项目
+    @Published var currentJob: QueueItem?
+    /// 处理完的记录（新的在前）
+    @Published var queueRecords: [QueueRecord] = []
+    /// 「已加入队列」之类的提示
+    @Published var queueNotice: String?
+    private var holdingKeeper = false
 
     /// 设置里选的默认画质
     static var defaultQuality: Quality {
@@ -100,6 +130,119 @@ final class DownloadManager: ObservableObject {
     var finishedURL: URL? { if case .finished(let url) = phase { return url }; return nil }
     var batchMessage: String? { if case .batchDone(let msg) = phase { return msg }; return nil }
     var errorMessage: String? { if case .failed(let msg) = phase { return msg }; return nil }
+
+    /// 新链接进来：队列模式下，正在忙就排队，否则马上开始
+    func submit(_ text: String, autoDownload: Bool) {
+        guard Self.queueMode else {
+            fetch(text, autoDownload: autoDownload)
+            return
+        }
+        let busy = isBusy || currentJob != nil
+        guard let url = Self.extractURL(text) else {
+            if busy {
+                queueNotice = "没认出链接，没有加入队列"
+            } else {
+                fetch(text, autoDownload: true)  // 显示错误
+            }
+            return
+        }
+        let key = url.absoluteString
+        if currentJob?.url.absoluteString == key || queue.contains(where: { $0.url.absoluteString == key }) {
+            queueNotice = "这个链接已经在队列里了"
+            return
+        }
+        let item = QueueItem(text: text, url: url, label: Self.queueLabel(url))
+        if busy {
+            queue.append(item)
+            queueNotice = "已加入队列：\(item.label)（排在第 \(queue.count) 个）"
+        } else {
+            queueNotice = nil
+            startJob(item)
+        }
+    }
+
+    func removeFromQueue(at offsets: IndexSet) {
+        queue.remove(atOffsets: offsets)
+        if queue.isEmpty && currentJob == nil { releaseKeeper() }
+    }
+
+    func clearQueue() {
+        queue.removeAll()
+        queueNotice = nil
+        if currentJob == nil { releaseKeeper() }
+    }
+
+    var queueSuccessCount: Int { queueRecords.filter(\.ok).count }
+
+    func clearQueueRecords() {
+        queueRecords.removeAll()
+    }
+
+    private func startJob(_ item: QueueItem) {
+        currentJob = item
+        // 两个视频之间（解析时）也要保持后台运行
+        if !holdingKeeper {
+            holdingKeeper = true
+            BackgroundKeeper.shared.begin()
+        }
+        fetch(item.text, autoDownload: true)
+    }
+
+    private func releaseKeeper() {
+        guard holdingKeeper else { return }
+        holdingKeeper = false
+        BackgroundKeeper.shared.end()
+    }
+
+    private func phaseChanged() {
+        switch phase {
+        case .finished, .failed, .batchDone, .ready: break
+        default: return
+        }
+        guard currentJob != nil || !queue.isEmpty else { return }
+        // 解析完成（.ready）后通常马上开始下载，等这一轮结束再判断是不是真的空闲了
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.jobMaybeEnded()
+        }
+    }
+
+    private func jobMaybeEnded() {
+        guard !isBusy else { return }
+        if let job = currentJob {
+            queueRecords.insert(record(for: job), at: 0)
+            currentJob = nil
+        }
+        if !queue.isEmpty {
+            startJob(queue.removeFirst())
+        } else {
+            releaseKeeper()
+        }
+    }
+
+    private func record(for job: QueueItem) -> QueueRecord {
+        let title = info?.title ?? playlist?.title ?? job.label
+        switch phase {
+        case .finished(let url):
+            return QueueRecord(title: url.deletingPathExtension().lastPathComponent, ok: true, message: "下载完成")
+        case .failed(let message):
+            return QueueRecord(title: job.label, ok: false, message: message)
+        case .batchDone(let message):
+            return QueueRecord(title: title, ok: failedDownloads.isEmpty, message: message)
+        default:
+            if playlist != nil && info == nil {
+                return QueueRecord(title: title, ok: false, message: "播放列表需要手动勾选，队列里已跳过")
+            }
+            return QueueRecord(title: title, ok: false, message: "没有下载（已取消，或需要手动选择格式）")
+        }
+    }
+
+    /// 队列里显示的名字，例如「抖音 · v.douyin.com/abc」
+    static func queueLabel(_ url: URL) -> String {
+        let site = Site.detect(url)?.rawValue ?? "YouTube"
+        let short = (url.host ?? "") + url.path
+        return "\(site) · \(short.count > 40 ? String(short.prefix(40)) + "…" : short)"
+    }
 
     // MARK: 解析链接
 
