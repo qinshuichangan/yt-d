@@ -71,7 +71,7 @@ final class BackgroundKeeper {
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
         ) { [weak self] note in
             let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
-            guard raw.flatMap { AVAudioSession.InterruptionType(rawValue: $0) } == .ended else { return }
+            guard raw.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) == .ended else { return }
             Task { @MainActor in
                 guard let self, self.users > 0 else { return }
                 self.startAudio()

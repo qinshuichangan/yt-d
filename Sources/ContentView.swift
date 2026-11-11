@@ -10,7 +10,7 @@ struct ContentView: View {
     @AppStorage(DownloadManager.autoDownloadKey) private var autoDownload = false
     @AppStorage(DownloadManager.autoSavePhotosKey) private var autoSavePhotos = false
     @AppStorage(DownloadManager.autoReadClipboardKey) private var autoReadClipboard = false
-    @AppStorage(ChunkedDownloader.multiThreadKey) private var multiThread = false
+    @AppStorage(ChunkedDownloader.threadsKey) private var threads = ChunkedDownloader.threadCount
     @Environment(\.scenePhase) private var scenePhase
     @State private var lastPasteboardChange = -1
     @State private var showPlaylistItems = true
@@ -99,11 +99,33 @@ struct ContentView: View {
                     }
                     Toggle("下载完成后自动保存到相册", isOn: $autoSavePhotos)
                     Toggle("下载完成后自动复制到剪贴板", isOn: $autoCopy)
-                    Toggle("多线程下载（更快）", isOn: $multiThread)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("下载线程数")
+                            Spacer()
+                            Text(threads <= 1 ? "1（单线程）" : "\(threads)")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { Double(threads) },
+                                set: { threads = Int($0.rounded()) }
+                            ),
+                            in: 1...Double(ChunkedDownloader.maxThreads),
+                            step: 1
+                        ) {
+                            Text("下载线程数")
+                        } minimumValueLabel: {
+                            Text("1").font(.caption)
+                        } maximumValueLabel: {
+                            Text("\(ChunkedDownloader.maxThreads)").font(.caption)
+                        }
+                    }
                 } header: {
                     Text("设置")
                 } footer: {
-                    Text("自动读取剪贴板：打开 App 时，如果剪贴板里是 YouTube 或抖音链接，就自动填进来。iOS 每次会问「允许粘贴吗」，不想被问可以去 设置 → 视频下载 → 从其他 App 粘贴 → 允许。\n自动下载：点「粘贴」或从分享菜单打开后，按默认画质直接下载单个视频（抖音下载无水印版）。播放列表仍会先列出来让你勾选。\n自动保存到相册：音频文件不会存进相册。\n多线程下载：同时开 \(ChunkedDownloader.threadCount) 条连接分段下载，抖音等单条连接被限速时会快很多。如果出现下载失败，关掉再试。")
+                    Text("自动读取剪贴板：打开 App 时，如果剪贴板里是 YouTube 或抖音链接，就自动填进来。iOS 每次会问「允许粘贴吗」，不想被问可以去 设置 → 视频下载 → 从其他 App 粘贴 → 允许。\n自动下载：点「粘贴」或从分享菜单打开后，按默认画质直接下载单个视频（抖音下载无水印版）。播放列表仍会先列出来让你勾选。\n自动保存到相册：音频文件不会存进相册。\n下载线程数：大于 1 时同时开多条连接分段下载，抖音等单条连接被限速时会快很多。一般 4～16 就够了，开太多可能被服务器拒绝、也更费电；出现下载失败就调小再试（1 = 单线程）。")
                 }
             }
             .navigationTitle("视频下载")

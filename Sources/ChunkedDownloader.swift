@@ -1,19 +1,29 @@
 import Foundation
 
 /// 分段下载：按范围（Range）一段一段地请求，边收边写进文件，进度和速度能实时更新。
-/// 打开「多线程下载」时，会开几条独立的连接同时下载不同的段，适合抖音这种单条连接被限速的情况。
+/// 线程数大于 1 时，会开几条独立的连接同时下载不同的段，适合抖音这种单条连接被限速的情况。
 enum ChunkedDownloader {
-    static let multiThreadKey = "multiThreadDownload"
-    static var multiThreadEnabled: Bool { UserDefaults.standard.bool(forKey: multiThreadKey) }
+    static let threadsKey = "downloadThreads"
+    /// 旧版本的「多线程下载」开关（开着的话，升级后默认 4 线程）
+    private static let oldMultiThreadKey = "multiThreadDownload"
+    static let maxThreads = 64
+
+    /// 设置里选的线程数（1～64）
+    static var threadCount: Int {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: threadsKey) == nil {
+            return defaults.bool(forKey: oldMultiThreadKey) ? 4 : 1
+        }
+        return min(max(defaults.integer(forKey: threadsKey), 1), maxThreads)
+    }
 
     /// 单线程时每段的大小（YouTube 一次请求太大会被限速）
     static let chunkSize: Int64 = 5 * 1024 * 1024
-    /// 多线程时每段的大小
+    /// 多线程时每段最大、最小的大小（线程多时自动切小，让每条连接都有活干）
     static let parallelChunkSize: Int64 = 2 * 1024 * 1024
+    static let minParallelChunkSize: Int64 = 256 * 1024
     /// 多线程时先下一小段，拿到文件总大小
     static let probeSize: Int64 = 512 * 1024
-    /// 同时开几条连接
-    static let threadCount = 4
     /// 每一段失败后最多重试几次
     static let maxRetries = 3
 
@@ -43,9 +53,10 @@ enum ChunkedDownloader {
         defer { file.close() }
 
         let counter = ProgressCounter(report: progress)
-        let parallel = multiThreadEnabled
+        let threads = threadCount
+        let parallel = threads > 1
         // 每条连接各用一个独立的 URLSession，保证真的是几条不同的网络连接
-        let connections = (0..<(parallel ? threadCount : 1)).map { _ in Connection(headers: headers) }
+        var connections = [Connection(headers: headers)]
         defer { connections.forEach { $0.close() } }
 
         // 第一段：顺便拿到文件总大小和跳转后的真实地址
@@ -88,7 +99,10 @@ enum ChunkedDownloader {
         try file.reserve(total)
 
         // 剩下的部分切成若干段，几条连接各自领取
-        let pieceSize = parallel ? parallelChunkSize : chunkSize
+        let remaining = total - first.received
+        let pieceSize = parallel
+            ? min(parallelChunkSize, max(minParallelChunkSize, remaining / Int64(threads * 2)))
+            : chunkSize
         var pieces: [(Int64, Int64)] = []
         var position = first.received
         while position < total {
@@ -97,9 +111,15 @@ enum ChunkedDownloader {
             position = end + 1
         }
         let queue = PieceQueue(pieces)
+        // 段数比线程少时，多开的连接也没活干
+        let needed = min(threads, pieces.count)
+        while connections.count < needed {
+            connections.append(Connection(headers: headers))
+        }
+        let workers = connections
 
         try await withThrowingTaskGroup(of: Void.self) { group in
-            for connection in connections {
+            for connection in workers {
                 group.addTask {
                     while let piece = queue.next() {
                         try await downloadRange(connection, url: current, start: piece.0, end: piece.1,
