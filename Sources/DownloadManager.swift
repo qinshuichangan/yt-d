@@ -64,6 +64,8 @@ final class DownloadManager: ObservableObject {
     @Published var progress: Double = 0
     @Published var statusText = ""
     @Published var sizeText = ""
+    /// 下载速度（KB/s 或 MB/s）
+    @Published var speedText = ""
     @Published var copiedToClipboard = false
     @Published var selectedIDs: Set<String> = []
     @Published var failedDownloads: [FailedDownload] = []
@@ -81,6 +83,12 @@ final class DownloadManager: ObservableObject {
     private static var autoSavePhotos: Bool { UserDefaults.standard.bool(forKey: autoSavePhotosKey) }
 
     private var task: Task<Void, Never>?
+    private var speed = SpeedMeter()
+    private var speedTicker: Task<Void, Never>?
+    /// 每开始下载一个文件 +1，旧文件迟到的进度回报会被忽略
+    private var fileToken = 0
+    /// 正在传输数据（解析、合并时为 false，不显示速度）
+    private var measuring = false
 
     // MARK: 给界面用的状态
 
@@ -203,7 +211,8 @@ final class DownloadManager: ObservableObject {
         startWork()
 
         task = Task {
-            defer { UIApplication.shared.isIdleTimerDisabled = false }
+            BackgroundKeeper.shared.begin()
+            defer { BackgroundKeeper.shared.end() }
             do {
                 let output = try await performDownload(option.kind, title: info.title, label: nil, start: 0, span: 1)
                 if let note = info.note {
@@ -267,7 +276,8 @@ final class DownloadManager: ObservableObject {
         photoSaveMessage = nil
 
         task = Task {
-            defer { UIApplication.shared.isIdleTimerDisabled = false }
+            BackgroundKeeper.shared.begin()
+            defer { BackgroundKeeper.shared.end() }
             let count = Double(items.count)
             var succeeded = 0
             var savedToPhotos = 0
@@ -320,8 +330,32 @@ final class DownloadManager: ObservableObject {
         phase = .downloading
         progress = 0
         sizeText = ""
+        speedText = ""
+        speed.reset()
+        measuring = false
         copiedToClipboard = false
-        UIApplication.shared.isIdleTimerDisabled = true  // 下载时不自动锁屏
+        startSpeedTicker()
+    }
+
+    /// 每半秒刷新一次速度；卡住不动时会慢慢降到 0
+    private func startSpeedTicker() {
+        speedTicker?.cancel()
+        speedTicker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let self, self.isDownloading else { break }
+                self.speedText = self.measuring ? (self.speed.rate().map(DownloadManager.speedString) ?? "") : ""
+            }
+            self?.speedText = ""
+        }
+    }
+
+    /// 开始传输一个新文件，返回它的编号
+    private func beginTransfer() -> Int {
+        fileToken += 1
+        speed.startFile()
+        measuring = true
+        return fileToken
     }
 
     /// 下载一个视频（必要时合并），返回保存的文件
@@ -334,6 +368,7 @@ final class DownloadManager: ObservableObject {
         let base = Self.safeFileName(title)
         let prefix = label.map { "\($0)：" } ?? ""
         var cleanup: [URL] = []
+        defer { measuring = false }
 
         do {
             let output: URL
@@ -342,16 +377,18 @@ final class DownloadManager: ObservableObject {
                 output = Self.uniqueURL(docs.appendingPathComponent("\(base).\(ext)"))
                 cleanup = [output]
                 statusText = "\(prefix)正在下载…"
+                let token = beginTransfer()
                 try await ChunkedDownloader.download(from: stream.url, to: output) { done, total in
-                    Task { @MainActor in self.report(done, total, start: start, span: span) }
+                    Task { @MainActor in self.report(done, total, token: token, start: start, span: span) }
                 }
 
             case let .direct(url, ext, headers):
                 output = Self.uniqueURL(docs.appendingPathComponent("\(base).\(ext)"))
                 cleanup = [output]
                 statusText = "\(prefix)正在下载…"
+                let token = beginTransfer()
                 try await ChunkedDownloader.download(from: url, to: output, headers: headers) { done, total in
-                    Task { @MainActor in self.report(done, total, start: start, span: span) }
+                    Task { @MainActor in self.report(done, total, token: token, start: start, span: span) }
                 }
                 // 确认下到的是视频，而不是一个错误网页
                 guard Self.looksLikeMP4(output) else {
@@ -365,14 +402,20 @@ final class DownloadManager: ObservableObject {
                 cleanup = [videoFile, audioFile, output]
 
                 statusText = "\(prefix)正在下载画面…"
+                let videoToken = beginTransfer()
                 try await ChunkedDownloader.download(from: video.url, to: videoFile) { done, total in
-                    Task { @MainActor in self.report(done, total, start: start, span: span * 0.85) }
+                    Task { @MainActor in self.report(done, total, token: videoToken, start: start, span: span * 0.85) }
                 }
                 statusText = "\(prefix)正在下载声音…"
+                let audioToken = beginTransfer()
                 try await ChunkedDownloader.download(from: audio.url, to: audioFile) { done, total in
-                    Task { @MainActor in self.report(done, total, start: start + span * 0.85, span: span * 0.12) }
+                    Task { @MainActor in
+                        self.report(done, total, token: audioToken, start: start + span * 0.85, span: span * 0.12)
+                    }
                 }
                 statusText = "\(prefix)正在合并…"
+                measuring = false
+                speedText = ""
                 sizeText = ""
                 try await Merger.merge(video: videoFile, audio: audioFile, output: output)
                 try? fm.removeItem(at: videoFile)
@@ -389,8 +432,9 @@ final class DownloadManager: ObservableObject {
         Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
-    private func report(_ done: Int64, _ total: Int64?, start: Double, span: Double) {
-        guard isDownloading else { return }
+    private func report(_ done: Int64, _ total: Int64?, token: Int, start: Double, span: Double) {
+        guard isDownloading, token == fileToken else { return }
+        speed.record(done)
         if let total, total > 0 {
             progress = start + span * min(1, Double(done) / Double(total))
             sizeText = "\(Self.mb(done)) / \(Self.mb(total))"
@@ -566,5 +610,50 @@ final class DownloadManager: ObservableObject {
 
     static func mb(_ bytes: Int64) -> String {
         String(format: "%.1f MB", Double(bytes) / 1_048_576)
+    }
+
+    /// 不到 1 MB/s 显示 KB/s，否则显示 MB/s
+    static func speedString(_ bytesPerSecond: Double) -> String {
+        if bytesPerSecond >= 1_048_576 {
+            return String(format: "%.1f MB/s", bytesPerSecond / 1_048_576)
+        }
+        return "\(Int(bytesPerSecond / 1024)) KB/s"
+    }
+}
+
+/// 根据最近 3 秒收到的数据量算下载速度
+struct SpeedMeter {
+    private var samples: [(time: TimeInterval, bytes: Int64)] = []
+    /// 之前几个文件（比如画面）已经下完的量
+    private var finishedBytes: Int64 = 0
+    private var currentDone: Int64 = 0
+    private var hasData = false
+    private static let window: TimeInterval = 3
+
+    mutating func reset() {
+        self = SpeedMeter()
+    }
+
+    mutating func startFile() {
+        finishedBytes += currentDone
+        currentDone = 0
+    }
+
+    mutating func record(_ done: Int64) {
+        currentDone = max(currentDone, done)
+        hasData = true
+        let now = ProcessInfo.processInfo.systemUptime
+        samples.append((now, finishedBytes + currentDone))
+        samples.removeAll { now - $0.time > SpeedMeter.window }
+    }
+
+    /// 字节/秒；刚开始数据还不够时返回 nil
+    mutating func rate() -> Double? {
+        let now = ProcessInfo.processInfo.systemUptime
+        samples.removeAll { now - $0.time > SpeedMeter.window }
+        guard let first = samples.first, let last = samples.last else { return hasData ? 0 : nil }
+        let elapsed = now - first.time
+        guard elapsed >= 0.5 else { return nil }
+        return Double(last.bytes - first.bytes) / elapsed
     }
 }
