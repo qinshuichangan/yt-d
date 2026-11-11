@@ -72,6 +72,9 @@ enum ChunkedDownloader {
                                            file: file, counter: counter)
         }
 
+        AppLog.add("请求 \(AppLog.short(url)) → HTTP \(first.status)，类型 \(first.contentType ?? "?")，"
+                   + "总大小 \(first.total.map { "\($0)" } ?? "未知")，实际地址 \(AppLog.short(first.finalURL))，"
+                   + "线程 \(threads)，请求头 \(headers.keys.sorted())")
         switch first.status {
         case 206:
             break
@@ -158,6 +161,7 @@ enum ChunkedDownloader {
                 position += result.received
                 failures = 0
             } catch let partial as PartialFailure {
+                AppLog.add("分段 \(position)-\(end) 中断（已收 \(partial.received)）：\(AppLog.describe(partial.underlying))")
                 position += partial.received
                 failures = partial.received > 0 ? 0 : failures + 1
                 if failures > maxRetries { throw partial.underlying }
@@ -165,6 +169,7 @@ enum ChunkedDownloader {
             } catch {
                 if error is CancellationError { throw error }
                 if let failure = error as? Failure, case .noRangeSupport = failure { throw error }
+                AppLog.add("分段 \(position)-\(end) 失败：\(AppLog.describe(error))")
                 failures += 1
                 if failures > maxRetries { throw error }
                 try await Task.sleep(nanoseconds: UInt64(failures) * 700_000_000)
@@ -206,6 +211,7 @@ enum ChunkedDownloader {
                 let underlying = (error as? PartialFailure)?.underlying ?? error
                 // 已经收到一部分数据时不能简单重来，直接报错
                 if let partial = error as? PartialFailure, partial.received > 0 { throw underlying }
+                AppLog.add("请求失败（第 \(failures + 1) 次）：\(AppLog.describe(underlying))")
                 failures += 1
                 if failures > maxRetries { throw underlying }
                 try await Task.sleep(nanoseconds: UInt64(failures) * 700_000_000)
@@ -225,6 +231,7 @@ private struct PartialFailure: Error {
 private final class Connection: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     struct Result {
         let status: Int
+        var contentType: String? = nil
         let total: Int64?
         let finalURL: URL?
         let received: Int64
@@ -254,7 +261,10 @@ private final class Connection: NSObject, URLSessionDataDelegate, @unchecked Sen
             self.counter = counter
         }
 
-        var result: Result { Result(status: status, total: total, finalURL: finalURL, received: received) }
+        var contentType: String?
+        var result: Result {
+            Result(status: status, contentType: contentType, total: total, finalURL: finalURL, received: received)
+        }
     }
 
     private let headers: [String: String]
@@ -316,6 +326,7 @@ private final class Connection: NSObject, URLSessionDataDelegate, @unchecked Sen
         let http = response as? HTTPURLResponse
         job.status = http?.statusCode ?? 0
         job.finalURL = http?.url
+        job.contentType = http?.value(forHTTPHeaderField: "Content-Type")
         if let range = http?.value(forHTTPHeaderField: "Content-Range"),
            let last = range.split(separator: "/").last,
            let value = Int64(last) {

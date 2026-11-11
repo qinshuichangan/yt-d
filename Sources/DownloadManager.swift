@@ -252,6 +252,7 @@ final class DownloadManager: ObservableObject {
             return
         }
         let ids = Self.parseIDs(url)
+        AppLog.add("解析：\(AppLog.short(url))，网站：\(Site.detect(url)?.rawValue ?? "YouTube")")
         task?.cancel()
         info = nil
         playlist = nil
@@ -312,6 +313,7 @@ final class DownloadManager: ObservableObject {
                     download(DownloadOption(label: Self.defaultQuality.rawValue, detail: "", kind: autoKind))
                 }
             } else {
+                AppLog.add("解析失败：\(lastError.map(AppLog.describe) ?? "未知错误")")
                 phase = .failed("解析失败：\(lastError.map { ErrorText.describe($0).text } ?? "未知错误")")
             }
         }
@@ -324,6 +326,7 @@ final class DownloadManager: ObservableObject {
                 let loaded = try await site.fetch(url)
                 if Task.isCancelled { return }
                 guard !loaded.options.isEmpty else { throw SiteError.noVideo }
+                AppLog.add("解析成功：\(loaded.title)；选项：\(loaded.options.map(\.label).joined(separator: " / "))")
                 info = loaded
                 phase = .ready
                 if autoDownload, let first = loaded.options.first {
@@ -331,6 +334,7 @@ final class DownloadManager: ObservableObject {
                 }
             } catch {
                 if Task.isCancelled { return }
+                AppLog.add("解析失败（\(site.rawValue)）：\(AppLog.describe(error))")
                 phase = .failed("解析失败（\(site.rawValue)）：\(ErrorText.describe(error).text)")
             }
         }
@@ -346,7 +350,9 @@ final class DownloadManager: ObservableObject {
             BackgroundKeeper.shared.begin()
             defer { BackgroundKeeper.shared.end() }
             do {
+                AppLog.add("开始下载：\(option.label)")
                 let output = try await performDownload(option.kind, title: info.title, label: nil, start: 0, span: 1)
+                AppLog.add("下载完成：\(output.lastPathComponent)（\(Self.sizeDescription(output))）")
                 if let note = info.note {
                     // 作品说明存成同名 .txt，放在视频旁边
                     let noteURL = output.deletingPathExtension().appendingPathExtension("txt")
@@ -363,8 +369,10 @@ final class DownloadManager: ObservableObject {
                 phase = .finished(output)
             } catch {
                 if Self.isCancellation(error) {
+                    AppLog.add("已取消")
                     phase = .ready
                 } else {
+                    AppLog.add("下载失败：\(AppLog.describe(error))")
                     phase = .failed("下载失败：\(ErrorText.describe(error).text)")
                 }
             }
@@ -438,6 +446,7 @@ final class DownloadManager: ObservableObject {
                     if Self.isCancellation(error) { cancelled = true; break }
                     // 失败的先记下来，继续下一个
                     let described = ErrorText.describe(error)
+                    AppLog.add("\(label) 失败：\(AppLog.describe(error))")
                     failed.append(FailedDownload(item: item, reason: described.text, retryable: described.retryable))
                 }
             }
@@ -514,6 +523,7 @@ final class DownloadManager: ObservableObject {
                 }
 
             case let .direct(url, ext, headers):
+                AppLog.add("直接下载：\(AppLog.short(url))")
                 output = Self.uniqueURL(docs.appendingPathComponent("\(base).\(ext)"))
                 cleanup = [output]
                 statusText = "\(prefix)正在下载…"
@@ -553,6 +563,7 @@ final class DownloadManager: ObservableObject {
         let videoFile = tmp.appendingPathComponent(UUID().uuidString + ".mp4")
         let audioFile = tmp.appendingPathComponent(UUID().uuidString + ".m4a")
         cleanup = [videoFile, audioFile, output]
+        AppLog.add("分开下载：画面 \(AppLog.short(video))，声音 \(AppLog.short(audio))")
 
         statusText = "\(prefix)正在下载画面…"
         let videoToken = beginTransfer()
@@ -587,6 +598,7 @@ final class DownloadManager: ObservableObject {
         do {
             try await Merger.merge(video: videoFile, audio: audioFile, output: output)
         } catch {
+            AppLog.add("合并失败：\(AppLog.describe(error))")
             throw Self.isCancellation(error) ? error : AppError(
                 "合并失败：\(error.localizedDescription)（画面 \(Self.sizeDescription(videoFile))，声音 \(Self.sizeDescription(audioFile))），换「快速」选项试试") as Error
         }

@@ -15,6 +15,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var lastPasteboardChange = -1
     @State private var showPlaylistItems = true
+    @State private var logCopied = false
 
     var body: some View {
         NavigationStack {
@@ -91,6 +92,7 @@ struct ContentView: View {
                 if let message = manager.errorMessage {
                     Section {
                         Text(message).foregroundStyle(.red)
+                        copyLogButton
                     }
                 }
 
@@ -100,6 +102,7 @@ struct ContentView: View {
                     } label: {
                         Label("登录网站（小红书、B站）", systemImage: "person.crop.circle")
                     }
+                    copyLogButton
                     Toggle("队列模式", isOn: $queueMode)
                     Toggle("自动读取剪贴板里的链接", isOn: $autoReadClipboard)
                     Toggle("粘贴链接后自动下载", isOn: $autoDownload)
@@ -154,6 +157,24 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: 日志
+
+    private var copyLogButton: some View {
+        Button {
+            UIPasteboard.general.string = AppLog.text()
+            // 日志里有网址，别让「自动读取剪贴板」把它当成新链接
+            lastPasteboardChange = UIPasteboard.general.changeCount
+            logCopied = true
+            Task {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                logCopied = false
+            }
+        } label: {
+            Label(logCopied ? "已复制，粘贴给 Claude 就行" : "复制运行日志",
+                  systemImage: logCopied ? "checkmark" : "doc.on.clipboard")
         }
     }
 

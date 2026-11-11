@@ -126,7 +126,14 @@ enum TikTokFetcher {
 /// 用 B站公开的接口：先查视频信息拿到 cid，再查播放地址。
 /// 不登录时一般最高 720p（mp4 直接下载）；登录后可以下 1080p（画面和声音分开，下载后合并）。
 enum BilibiliFetcher {
-    static let mediaHeaders = ["Referer": "https://www.bilibili.com/"]
+    /// B站的视频服务器要求请求像浏览器发出的一样（来源页 + 浏览器标识），否则返回 403
+    static let mediaHeaders = [
+        "Referer": "https://www.bilibili.com/",
+        "Origin": "https://www.bilibili.com",
+        "User-Agent": DouyinFetcher.headers["User-Agent"] ?? "",
+    ]
+    /// 查接口用（接口不需要浏览器标识）
+    static let apiHeaders = ["Referer": "https://www.bilibili.com/"]
 
     static func fetch(_ url: URL) async throws -> VideoInfo {
         await WebLogin.syncCookies()
@@ -149,7 +156,7 @@ enum BilibiliFetcher {
             .queryItems?.first { $0.name == "p" }?.value.flatMap(Int.init) ?? 1
 
         let view = try await Web.json(URL(string: "https://api.bilibili.com/x/web-interface/view?\(query)")!,
-                                      headers: mediaHeaders)
+                                      headers: apiHeaders)
         guard J.int(view, "code") == 0, let data = J.get(view, "data") else {
             throw SiteError.unavailable(J.str(view, "message"))
         }
@@ -162,7 +169,7 @@ enum BilibiliFetcher {
         var options: [DownloadOption] = []
         let dashJSON = try? await Web.json(
             URL(string: "https://api.bilibili.com/x/player/playurl?bvid=\(bvid)&cid=\(cid)&fnval=16&fourk=1")!,
-            headers: mediaHeaders)
+            headers: apiHeaders)
         let dash = J.get(dashJSON, "data", "dash")
         let audio = J.array(dash, "audio")
             .max { (J.int($0, "bandwidth") ?? 0) < (J.int($1, "bandwidth") ?? 0) }
@@ -181,7 +188,7 @@ enum BilibiliFetcher {
         // 2. 直接下载的 mp4（不登录一般能到 720p）
         let mp4JSON = try? await Web.json(
             URL(string: "https://api.bilibili.com/x/player/playurl?bvid=\(bvid)&cid=\(cid)&qn=80&fnval=1")!,
-            headers: mediaHeaders)
+            headers: apiHeaders)
         let durl = J.array(mp4JSON, "data", "durl")
         var mp4Height: Int64 = 0
         var mp4Option: DownloadOption?
