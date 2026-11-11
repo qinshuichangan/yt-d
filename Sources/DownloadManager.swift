@@ -138,7 +138,7 @@ final class DownloadManager: ObservableObject {
             return
         }
         let busy = isBusy || currentJob != nil
-        guard let url = Self.extractURL(text) else {
+        guard let url = Self.extractURL(from: text) else {
             if busy {
                 queueNotice = "没认出链接，没有加入队列"
             } else {
