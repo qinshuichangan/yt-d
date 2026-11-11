@@ -28,6 +28,9 @@ enum ErrorText {
             default: return (e.localizedDescription, true)
             }
         }
+        if let e = error as? SiteError {
+            return (e.localizedDescription, e.retryable)
+        }
         if error is URLError {
             return ("网络错误：\(error.localizedDescription)", true)
         }

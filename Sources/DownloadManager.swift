@@ -30,6 +30,8 @@ struct DownloadOption: Identifiable {
         case merge(video: YouTubeKit.Stream, audio: YouTubeKit.Stream)
         /// 直接下载一个地址（抖音等）
         case direct(URL, ext: String, headers: [String: String])
+        /// 画面和声音是两个地址，下载后合并（B站高画质等）
+        case mergeDirect(video: URL, audio: URL, headers: [String: String])
     }
     let id = UUID()
     let label: String
@@ -103,7 +105,7 @@ final class DownloadManager: ObservableObject {
 
     func fetch(_ text: String, autoDownload: Bool = false) {
         guard let url = Self.extractURL(from: text) else {
-            phase = .failed("没认出链接，请粘贴完整的 YouTube 链接")
+            phase = .failed("没认出链接，请粘贴完整的视频链接")
             return
         }
         let ids = Self.parseIDs(url)
@@ -115,8 +117,8 @@ final class DownloadManager: ObservableObject {
         photoSaveMessage = nil
         phase = .fetching
 
-        if DouyinFetcher.isDouyin(url) {
-            fetchDouyin(url, autoDownload: autoDownload)
+        if let site = Site.detect(url) {
+            fetchSite(site, url, autoDownload: autoDownload)
             return
         }
 
@@ -172,34 +174,21 @@ final class DownloadManager: ObservableObject {
         }
     }
 
-    private func fetchDouyin(_ url: URL, autoDownload: Bool) {
+    /// 抖音、TikTok、B站、小红书、推特、其他网页
+    private func fetchSite(_ site: Site, _ url: URL, autoDownload: Bool) {
         task = Task {
             do {
-                let result = try await DouyinFetcher.fetch(url)
-                var options: [DownloadOption] = []
-                if let clean = result.noWatermark {
-                    options.append(DownloadOption(
-                        label: "无水印原画",
-                        detail: "直接下载 mp4，同时保存作品说明",
-                        kind: .direct(clean, ext: "mp4", headers: DouyinFetcher.headers)
-                    ))
-                }
-                if let marked = result.watermarked, marked != result.noWatermark {
-                    options.append(DownloadOption(
-                        label: "带水印版本（备用）",
-                        detail: "无水印下载失败时用这个",
-                        kind: .direct(marked, ext: "mp4", headers: DouyinFetcher.headers)
-                    ))
-                }
-                guard !options.isEmpty else { throw DouyinFetcher.Failure.noData }
-                info = VideoInfo(title: result.title, thumbnail: result.cover, options: options, note: result.note)
+                let loaded = try await site.fetch(url)
+                if Task.isCancelled { return }
+                guard !loaded.options.isEmpty else { throw SiteError.noVideo }
+                info = loaded
                 phase = .ready
-                if autoDownload, let first = options.first {
+                if autoDownload, let first = loaded.options.first {
                     download(first)
                 }
             } catch {
                 if Task.isCancelled { return }
-                phase = .failed("解析失败：\(ErrorText.describe(error).text)")
+                phase = .failed("解析失败（\(site.rawValue)）：\(ErrorText.describe(error).text)")
             }
         }
     }
@@ -364,7 +353,6 @@ final class DownloadManager: ObservableObject {
     ) async throws -> URL {
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let tmp = fm.temporaryDirectory
         let base = Self.safeFileName(title)
         let prefix = label.map { "\($0)：" } ?? ""
         var cleanup: [URL] = []
@@ -391,41 +379,57 @@ final class DownloadManager: ObservableObject {
                     Task { @MainActor in self.report(done, total, token: token, start: start, span: span) }
                 }
                 // 确认下到的是视频，而不是一个错误网页
-                guard Self.looksLikeMP4(output) else {
+                guard !["mp4", "m4a", "m4v", "mov"].contains(ext.lowercased()) || Self.looksLikeMP4(output) else {
                     throw AppError("下载到的不是视频文件，换另一个选项试试")
                 }
 
             case let .merge(video, audio):
-                let videoFile = tmp.appendingPathComponent(UUID().uuidString + ".mp4")
-                let audioFile = tmp.appendingPathComponent(UUID().uuidString + ".m4a")
                 output = Self.uniqueURL(docs.appendingPathComponent("\(base).mp4"))
-                cleanup = [videoFile, audioFile, output]
+                try await downloadAndMerge(video: video.url, audio: audio.url, headers: [:], output: output,
+                                           prefix: prefix, start: start, span: span, cleanup: &cleanup)
 
-                statusText = "\(prefix)正在下载画面…"
-                let videoToken = beginTransfer()
-                try await ChunkedDownloader.download(from: video.url, to: videoFile) { done, total in
-                    Task { @MainActor in self.report(done, total, token: videoToken, start: start, span: span * 0.85) }
-                }
-                statusText = "\(prefix)正在下载声音…"
-                let audioToken = beginTransfer()
-                try await ChunkedDownloader.download(from: audio.url, to: audioFile) { done, total in
-                    Task { @MainActor in
-                        self.report(done, total, token: audioToken, start: start + span * 0.85, span: span * 0.12)
-                    }
-                }
-                statusText = "\(prefix)正在合并…"
-                measuring = false
-                speedText = ""
-                sizeText = ""
-                try await Merger.merge(video: videoFile, audio: audioFile, output: output)
-                try? fm.removeItem(at: videoFile)
-                try? fm.removeItem(at: audioFile)
+            case let .mergeDirect(video, audio, headers):
+                output = Self.uniqueURL(docs.appendingPathComponent("\(base).mp4"))
+                try await downloadAndMerge(video: video, audio: audio, headers: headers, output: output,
+                                           prefix: prefix, start: start, span: span, cleanup: &cleanup)
             }
             return output
         } catch {
             cleanup.forEach { try? fm.removeItem(at: $0) }
             throw error
         }
+    }
+
+    /// 分别下载画面和声音，再合并成一个 mp4
+    private func downloadAndMerge(
+        video: URL, audio: URL, headers: [String: String], output: URL,
+        prefix: String, start: Double, span: Double, cleanup: inout [URL]
+    ) async throws {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory
+        let videoFile = tmp.appendingPathComponent(UUID().uuidString + ".mp4")
+        let audioFile = tmp.appendingPathComponent(UUID().uuidString + ".m4a")
+        cleanup = [videoFile, audioFile, output]
+
+        statusText = "\(prefix)正在下载画面…"
+        let videoToken = beginTransfer()
+        try await ChunkedDownloader.download(from: video, to: videoFile, headers: headers) { done, total in
+            Task { @MainActor in self.report(done, total, token: videoToken, start: start, span: span * 0.85) }
+        }
+        statusText = "\(prefix)正在下载声音…"
+        let audioToken = beginTransfer()
+        try await ChunkedDownloader.download(from: audio, to: audioFile, headers: headers) { done, total in
+            Task { @MainActor in
+                self.report(done, total, token: audioToken, start: start + span * 0.85, span: span * 0.12)
+            }
+        }
+        statusText = "\(prefix)正在合并…"
+        measuring = false
+        speedText = ""
+        sizeText = ""
+        try await Merger.merge(video: videoFile, audio: audioFile, output: output)
+        try? fm.removeItem(at: videoFile)
+        try? fm.removeItem(at: audioFile)
     }
 
     private static func isCancellation(_ error: Error) -> Bool {
@@ -535,11 +539,9 @@ final class DownloadManager: ObservableObject {
 
     // MARK: 小工具
 
-    /// 是不是这个 App 能处理的链接（YouTube / 抖音）
+    /// 剪贴板里的链接要不要自动解析（YouTube 和专门支持的网站；其他网页不自动）
     static func isSupportedLink(_ url: URL) -> Bool {
-        let host = url.host?.lowercased() ?? ""
-        return host.hasSuffix("youtube.com") || host == "youtu.be" || host.hasSuffix(".youtu.be")
-            || DouyinFetcher.isDouyin(url)
+        Site.detect(url) != .generic
     }
 
     static func isVideoFile(_ url: URL) -> Bool {

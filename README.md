@@ -1,7 +1,9 @@
 # 视频下载（iOS 侧载用）
 
-在 iPhone 上独立运行的视频下载 App（YouTube、抖音），不需要电脑开着。
-基于开源库 [YouTubeKit](https://github.com/alexeichhorn/YouTubeKit)（MIT 许可）。
+在 iPhone 上独立运行的视频下载 App，不需要电脑开着。
+支持 YouTube、抖音、TikTok、B站、小红书、X（推特），其他网站会尝试从网页里找视频文件。
+YouTube 部分基于开源库 [YouTubeKit](https://github.com/alexeichhorn/YouTubeKit)（MIT 许可）；
+其他网站的解析思路参考了 [yt-dlp](https://github.com/yt-dlp/yt-dlp)，推特读不到时会用 [FxTwitter](https://github.com/FxEmbed/FxEmbed) 的公开接口。
 
 ## 功能
 - 粘贴链接 → 自动列出可选格式
@@ -52,7 +54,15 @@ YouTube 的使用条款原则上不允许下载视频。请只用于自己的视
 - 版本号在 `project.yml` 的 `CFBundleShortVersionString`，`CFBundleVersion` 每次 +1
 - App 首页底部会显示当前版本
 
+## 各网站说明
+- **TikTok**：打开作品网页取无水印地址；图文作品暂不支持。
+- **B站**：不登录一般最高 720p（直接下载 mp4）；在「设置」→「登录网站」登录后可下 1080p（画面声音分开下载再合并）。支持 b23.tv 短链接、分 P（链接里的 `?p=2`）。
+- **小红书**：分享链接要带 `xsec_token`（直接复制 App 里的分享链接就有）。海外网络常被要求登录，先在「登录网站」登录。图文笔记暂不支持。
+- **X（推特）**：先用推特官方嵌入接口，读不到时用 FxTwitter；一条推文有多个视频会分别列出。
+- **其他网站**：链接本身是视频文件就直接下载；否则在网页里找 og:video / `<video>` 的 mp4 地址。m3u8 直播流暂不支持。
+
 ## 更新记录
+- 2.06：综合解析：新增 TikTok、B站、小红书、X（推特）和通用网页；新增「登录网站」（小红书、B站），登录信息只保存在手机上
 - 1.96：「多线程下载」开关改为「下载线程数」拖动条（1～64）；线程多时自动把分段切小
 - 1.86：支持后台下载（切到别的 App、锁屏也不会停）；进度后面显示下载速度（KB/s / MB/s 自动切换）；新增「多线程下载」开关；下载改为边收边写，进度更新更平滑
 - 1.76：新增「自动读取剪贴板里的链接」开关（配合自动下载即可全自动）

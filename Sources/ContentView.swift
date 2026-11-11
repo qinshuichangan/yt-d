@@ -90,6 +90,11 @@ struct ContentView: View {
                 }
 
                 Section {
+                    NavigationLink {
+                        LoginListView()
+                    } label: {
+                        Label("登录网站（小红书、B站）", systemImage: "person.crop.circle")
+                    }
                     Toggle("自动读取剪贴板里的链接", isOn: $autoReadClipboard)
                     Toggle("粘贴链接后自动下载", isOn: $autoDownload)
                     Picker("默认画质", selection: $playlistQuality) {
@@ -125,7 +130,7 @@ struct ContentView: View {
                 } header: {
                     Text("设置")
                 } footer: {
-                    Text("自动读取剪贴板：打开 App 时，如果剪贴板里是 YouTube 或抖音链接，就自动填进来。iOS 每次会问「允许粘贴吗」，不想被问可以去 设置 → 视频下载 → 从其他 App 粘贴 → 允许。\n自动下载：点「粘贴」或从分享菜单打开后，按默认画质直接下载单个视频（抖音下载无水印版）。播放列表仍会先列出来让你勾选。\n自动保存到相册：音频文件不会存进相册。\n下载线程数：大于 1 时同时开多条连接分段下载，抖音等单条连接被限速时会快很多。一般 4～16 就够了，开太多可能被服务器拒绝、也更费电；出现下载失败就调小再试（1 = 单线程）。")
+                    Text("登录网站：小红书在海外经常要求登录；B站登录后能下 1080p。\n自动读取剪贴板：打开 App 时，如果剪贴板里是 YouTube、抖音、TikTok、B站、小红书、X 的链接，就自动填进来。iOS 每次会问「允许粘贴吗」，不想被问可以去 设置 → 视频下载 → 从其他 App 粘贴 → 允许。\n自动下载：点「粘贴」或从分享菜单打开后，直接下载单个视频（YouTube 按默认画质，其他网站下载第一个选项，一般是无水印原画）。播放列表仍会先列出来让你勾选。\n自动保存到相册：音频文件不会存进相册。\n下载线程数：大于 1 时同时开多条连接分段下载，抖音等单条连接被限速时会快很多。一般 4～16 就够了，开太多可能被服务器拒绝、也更费电；出现下载失败就调小再试（1 = 单线程）。")
                 }
             }
             .navigationTitle("视频下载")
@@ -199,7 +204,7 @@ struct ContentView: View {
 
     private var inputSection: some View {
         Section {
-            TextField("粘贴 YouTube 或抖音链接", text: $link, axis: .vertical)
+            TextField("粘贴视频链接", text: $link, axis: .vertical)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -231,7 +236,7 @@ struct ContentView: View {
             }
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
-                Text("在 YouTube 或抖音里点「分享」→「复制链接」，再回来点「粘贴」。")
+                Text("支持 YouTube、抖音、TikTok、B站、小红书、X（推特），其他网站也会尝试从网页里找视频。在 App 里点「分享」→「复制链接」，再回来点「粘贴」。")
                 Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
             }
         }
