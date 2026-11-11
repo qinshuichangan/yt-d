@@ -33,7 +33,13 @@ enum ChunkedDownloader {
         case noRangeSupport
         var errorDescription: String? {
             switch self {
-            case .http(let code): return "服务器返回错误（HTTP \(code)）"
+            case .http(let code):
+                switch code {
+                case 403: return "网站拒绝了下载（HTTP 403），可能是链接过期了，重新解析再试"
+                case 404: return "文件不存在（HTTP 404），重新解析再试"
+                case 416: return "文件是空的（HTTP 416）"
+                default: return "服务器返回错误（HTTP \(code)）"
+                }
             case .incomplete: return "文件没有下载完整，请重试"
             case .noRangeSupport: return "服务器不支持分段下载，请关掉「多线程下载」再试"
             }
@@ -67,17 +73,16 @@ enum ChunkedDownloader {
         }
 
         switch first.status {
-        case 416:
-            // 文件是空的
-            counter.flush()
-            return
+        case 206:
+            break
         case 200:
             // 服务器忽略了 Range，这一次已经把整个文件下完了
             counter.flush()
             if let total = first.total, first.received < total { throw Failure.incomplete }
             return
         default:
-            break  // 206
+            // 403 等：网站拒绝了这次下载（以前这里没报错，会留下一个空文件）
+            throw Failure.http(first.status)
         }
 
         let current = first.finalURL ?? url

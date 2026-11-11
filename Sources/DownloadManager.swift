@@ -556,21 +556,40 @@ final class DownloadManager: ObservableObject {
 
         statusText = "\(prefix)正在下载画面…"
         let videoToken = beginTransfer()
-        try await ChunkedDownloader.download(from: video, to: videoFile, headers: headers) { done, total in
-            Task { @MainActor in self.report(done, total, token: videoToken, start: start, span: span * 0.85) }
+        do {
+            try await ChunkedDownloader.download(from: video, to: videoFile, headers: headers) { done, total in
+                Task { @MainActor in self.report(done, total, token: videoToken, start: start, span: span * 0.85) }
+            }
+        } catch {
+            throw Self.isCancellation(error) ? error : AppError("画面下载失败：\(ErrorText.describe(error).text)") as Error
+        }
+        guard Self.looksLikeMP4(videoFile) else {
+            throw AppError("下载到的画面不是视频文件（\(Self.sizeDescription(videoFile))），换「快速」选项试试")
         }
         statusText = "\(prefix)正在下载声音…"
         let audioToken = beginTransfer()
-        try await ChunkedDownloader.download(from: audio, to: audioFile, headers: headers) { done, total in
-            Task { @MainActor in
-                self.report(done, total, token: audioToken, start: start + span * 0.85, span: span * 0.12)
+        do {
+            try await ChunkedDownloader.download(from: audio, to: audioFile, headers: headers) { done, total in
+                Task { @MainActor in
+                    self.report(done, total, token: audioToken, start: start + span * 0.85, span: span * 0.12)
+                }
             }
+        } catch {
+            throw Self.isCancellation(error) ? error : AppError("声音下载失败：\(ErrorText.describe(error).text)") as Error
+        }
+        guard Self.looksLikeMP4(audioFile) else {
+            throw AppError("下载到的声音不是音频文件（\(Self.sizeDescription(audioFile))），换「快速」选项试试")
         }
         statusText = "\(prefix)正在合并…"
         measuring = false
         speedText = ""
         sizeText = ""
-        try await Merger.merge(video: videoFile, audio: audioFile, output: output)
+        do {
+            try await Merger.merge(video: videoFile, audio: audioFile, output: output)
+        } catch {
+            throw Self.isCancellation(error) ? error : AppError(
+                "合并失败：\(error.localizedDescription)（画面 \(Self.sizeDescription(videoFile))，声音 \(Self.sizeDescription(audioFile))），换「快速」选项试试") as Error
+        }
         try? fm.removeItem(at: videoFile)
         try? fm.removeItem(at: audioFile)
     }
@@ -751,6 +770,12 @@ final class DownloadManager: ObservableObject {
             if !fm.fileExists(atPath: candidate.path) { return candidate }
             i += 1
         }
+    }
+
+    /// 文件大小，给错误提示用
+    static func sizeDescription(_ url: URL) -> String {
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
+        return size < 1024 ? "\(size) 字节" : mb(size)
     }
 
     static func mb(_ bytes: Int64) -> String {
