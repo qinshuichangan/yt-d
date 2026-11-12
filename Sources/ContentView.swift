@@ -343,7 +343,9 @@ struct ContentView: View {
         Section {
             VStack(alignment: .leading, spacing: 4) {
                 Text(playlist.title).font(.headline)
-                Text("\(playlist.items.count) 个视频" + (playlist.isMix ? "（YouTube 自动合辑）" : ""))
+                Text(playlist.isBilibiliParts
+                     ? "共 \(playlist.items.count) P（上面的格式只下载当前这一 P）"
+                     : "\(playlist.items.count) 个视频" + (playlist.isMix ? "（YouTube 自动合辑）" : ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -393,7 +395,7 @@ struct ContentView: View {
             }
             .disabled(manager.isBusy || manager.selectedIDs.isEmpty)
         } header: {
-            Text("播放列表")
+            Text(playlist.isBilibiliParts ? "分P 批量下载" : "播放列表")
         } footer: {
             Text("会一个接一个依次下载，切到后台也会继续。失败的会先跳过，最后可以重试。")
         }

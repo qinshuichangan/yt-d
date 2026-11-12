@@ -22,6 +22,8 @@ struct VideoInfo {
     let options: [DownloadOption]
     /// 和视频一起保存的文字说明（抖音作品用）
     var note: String? = nil
+    /// 分P 列表（B站多P 视频）
+    var parts: PlaylistInfo? = nil
 }
 
 struct DownloadOption: Identifiable {
@@ -326,7 +328,12 @@ final class DownloadManager: ObservableObject {
                 let loaded = try await site.fetch(url)
                 if Task.isCancelled { return }
                 guard !loaded.options.isEmpty else { throw SiteError.noVideo }
-                AppLog.add("解析成功：\(loaded.title)；选项：\(loaded.options.map(\.label).joined(separator: " / "))")
+                AppLog.add("解析成功：\(loaded.title)；选项：\(loaded.options.map(\.label).joined(separator: " / "))"
+                           + (loaded.parts.map { "；共 \($0.items.count) P" } ?? ""))
+                if let parts = loaded.parts {
+                    playlist = parts
+                    selectedIDs = Set(parts.items.map(\.videoID))  // 默认全选
+                }
                 info = loaded
                 phase = .ready
                 if autoDownload, let first = loaded.options.first {
@@ -432,11 +439,29 @@ final class DownloadManager: ObservableObject {
                 sizeText = ""
                 statusText = "\(label)：正在解析…"
                 do {
-                    let streams = try await YouTube(videoID: item.videoID, methods: [.local, .remote]).streams
-                    guard let kind = Self.pick(quality, from: streams) else {
-                        throw AppError("没有合适的格式")
+                    let output: URL
+                    if let pageURL = item.pageURL {
+                        // B站分P 等：先解析这一项自己的页面
+                        guard let site = Site.detect(pageURL) else { throw AppError("不支持的链接") }
+                        let loaded = try await site.fetch(pageURL)
+                        guard let kind = Self.pickSiteOption(quality, from: loaded.options) else {
+                            throw AppError("没有合适的格式")
+                        }
+                        AppLog.add("\(label)：\(loaded.title)")
+                        output = try await performDownload(kind, title: loaded.title, label: label,
+                                                           start: start, span: 1 / count)
+                        if let note = loaded.note {
+                            try? note.write(to: output.deletingPathExtension().appendingPathExtension("txt"),
+                                            atomically: true, encoding: .utf8)
+                        }
+                    } else {
+                        let streams = try await YouTube(videoID: item.videoID, methods: [.local, .remote]).streams
+                        guard let kind = Self.pick(quality, from: streams) else {
+                            throw AppError("没有合适的格式")
+                        }
+                        output = try await performDownload(kind, title: item.title, label: label,
+                                                           start: start, span: 1 / count)
                     }
-                    let output = try await performDownload(kind, title: item.title, label: label, start: start, span: 1 / count)
                     succeeded += 1
                     if Self.autoSavePhotos, Self.isVideoFile(output) {
                         statusText = "\(label)：正在存到相册…"
@@ -708,6 +733,33 @@ final class DownloadManager: ObservableObject {
                 return .merge(video: v, audio: audio)
             }
             return progressive.map { .single($0, ext: "mp4") }
+        }
+    }
+
+    /// 批量下载其他网站（B站分P 等）时，按画质偏好从解析出的选项里挑一个
+    static func pickSiteOption(_ quality: Quality, from options: [DownloadOption]) -> DownloadOption.Kind? {
+        func isAudio(_ option: DownloadOption) -> Bool {
+            if case let .direct(_, ext, _) = option.kind { return ext == "m4a" }
+            return false
+        }
+        func isDirect(_ option: DownloadOption) -> Bool {
+            if case .direct = option.kind { return true }
+            return false
+        }
+        func height(_ option: DownloadOption) -> Int {
+            Web.firstMatch(option.label, "(\\d+)p").flatMap(Int.init) ?? 0
+        }
+        let videos = options.filter { !isAudio($0) }
+        switch quality {
+        case .audio:
+            return options.first(where: isAudio)?.kind
+        case .fast:
+            return (videos.first(where: isDirect) ?? videos.last)?.kind
+        case .hd720:
+            let fitting = videos.filter { (1...720).contains(height($0)) }
+            return (fitting.max { height($0) < height($1) } ?? videos.last)?.kind
+        case .best:
+            return videos.first?.kind  // 选项本来就是从高到低排的
         }
     }
 

@@ -3,6 +3,8 @@ import Foundation
 struct PlaylistItem: Identifiable, Hashable {
     let videoID: String
     let title: String
+    /// 非 YouTube 的条目（B站分P 等）：这一项自己的网页地址
+    var pageURL: URL? = nil
     var id: String { videoID }
 }
 
@@ -12,6 +14,8 @@ struct PlaylistInfo {
     let items: [PlaylistItem]
     /// YouTube 自动生成的合辑（列表 ID 以 RD 开头）
     let isMix: Bool
+    /// 是 B站分P 列表
+    var isBilibiliParts = false
 }
 
 /// 读取播放列表里的视频 ID 和标题（通过 YouTube 网页版用的内部接口）。

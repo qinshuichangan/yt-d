@@ -20,8 +20,8 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: 视频下载
-        CFBundleShortVersionString: "2.27"
-        CFBundleVersion: "20"
+        CFBundleShortVersionString: "2.37"
+        CFBundleVersion: "21"
         UILaunchScreen: {}
         CFBundleURLTypes:
           - CFBundleURLName: com.example.ytdownloader

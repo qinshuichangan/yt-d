@@ -246,7 +246,20 @@ enum BilibiliFetcher {
         原链接：https://www.bilibili.com/video/\(bvid)\(pages.count > 1 ? "?p=\(partNumber)" : "")
         保存时间：\(Web.timestamp())
         """
-        return VideoInfo(title: title, thumbnail: Web.url(J.str(data, "pic")), options: options, note: note)
+        // 多P：列出所有分P，可以勾选批量下载
+        var parts: PlaylistInfo?
+        if pages.count > 1 {
+            let items = pages.enumerated().compactMap { offset, page -> PlaylistItem? in
+                let number = J.int(page, "page").map(Int.init) ?? (offset + 1)
+                guard let link = URL(string: "https://www.bilibili.com/video/\(bvid)?p=\(number)") else { return nil }
+                let part = J.str(page, "part") ?? ""
+                return PlaylistItem(videoID: "\(bvid)_p\(number)", title: "P\(number) \(part)", pageURL: link)
+            }
+            parts = PlaylistInfo(id: bvid, title: J.str(data, "title") ?? bvid, items: items, isMix: false,
+                                 isBilibiliParts: true)
+        }
+        return VideoInfo(title: title, thumbnail: Web.url(J.str(data, "pic")), options: options, note: note,
+                         parts: parts)
     }
 
     private static func height(forQuality quality: Int64) -> Int64 {
