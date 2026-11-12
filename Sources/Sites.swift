@@ -7,6 +7,7 @@ enum Site: String {
     case bilibili = "B站"
     case xiaohongshu = "小红书"
     case twitter = "X（推特）"
+    case instagram = "Instagram"
     case generic = "网页"
 
     /// 根据链接判断是哪个网站；YouTube 返回 nil（走原来的流程）
@@ -20,6 +21,7 @@ enum Site: String {
         if on("tiktok.com") { return .tiktok }
         if on("bilibili.com", "b23.tv", "bili2233.cn") { return .bilibili }
         if on("xiaohongshu.com", "xhslink.com", "rednote.com") { return .xiaohongshu }
+        if on("instagram.com", "instagr.am") { return .instagram }
         if on("twitter.com", "x.com", "t.co", "fxtwitter.com", "vxtwitter.com", "fixupx.com", "fixvx.com") { return .twitter }
         return .generic
     }
@@ -31,6 +33,7 @@ enum Site: String {
         case .bilibili: return try await BilibiliFetcher.fetch(url)
         case .xiaohongshu: return try await XiaohongshuFetcher.fetch(url)
         case .twitter: return try await TwitterFetcher.fetch(url)
+        case .instagram: return try await InstagramFetcher.fetch(url)
         case .generic: return try await GenericFetcher.fetch(url)
         }
     }

@@ -6,6 +6,7 @@ import WebKit
 enum LoginSite: String, CaseIterable, Identifiable {
     case xiaohongshu = "小红书"
     case bilibili = "B站"
+    case instagram = "Instagram"
 
     var id: String { rawValue }
 
@@ -13,6 +14,7 @@ enum LoginSite: String, CaseIterable, Identifiable {
         switch self {
         case .xiaohongshu: return URL(string: "https://www.xiaohongshu.com/explore")!
         case .bilibili: return URL(string: "https://passport.bilibili.com/h5-app/passport/login")!
+        case .instagram: return URL(string: "https://www.instagram.com/accounts/login/")!
         }
     }
 
@@ -20,6 +22,7 @@ enum LoginSite: String, CaseIterable, Identifiable {
         switch self {
         case .xiaohongshu: return ["xiaohongshu.com", "rednote.com", "xhscdn.com"]
         case .bilibili: return ["bilibili.com"]
+        case .instagram: return ["instagram.com"]
         }
     }
 
@@ -28,6 +31,7 @@ enum LoginSite: String, CaseIterable, Identifiable {
         switch self {
         case .xiaohongshu: return "web_session"
         case .bilibili: return "SESSDATA"
+        case .instagram: return "sessionid"
         }
     }
 
@@ -35,6 +39,7 @@ enum LoginSite: String, CaseIterable, Identifiable {
         switch self {
         case .xiaohongshu: return "海外网络打开小红书经常要求登录，登录后才能解析"
         case .bilibili: return "不登录最高 720p，登录后可以下载 1080p"
+        case .instagram: return "不登录时经常读不到视频（看多了会被限制），登录后最稳定。建议用小号登录"
         }
     }
 

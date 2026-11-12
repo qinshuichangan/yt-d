@@ -40,6 +40,15 @@ enum Web {
         return String(text[range])
     }
 
+    /// 所有匹配里第一个括号的内容
+    static func allMatches(_ text: String, _ pattern: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return [] }
+        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
+            guard match.numberOfRanges > 1, let range = Range(match.range(at: 1), in: text) else { return nil }
+            return String(text[range])
+        }
+    }
+
     /// 网页里的 &amp; 之类还原
     static func unescapeHTML(_ text: String) -> String {
         text.replacingOccurrences(of: "&amp;", with: "&")
@@ -110,6 +119,7 @@ enum SiteError: LocalizedError {
     case needLogin(String)
     case unavailable(String?)
     case unsupportedStream
+    case unsupported(String)
 
     var errorDescription: String? {
         switch self {
@@ -121,6 +131,7 @@ enum SiteError: LocalizedError {
         case .needLogin(let site): return "\(site)要求登录才能看。请到「设置」→「登录网站」登录后再试"
         case .unavailable(let reason): return "作品不可用" + (reason.map { "：\($0)" } ?? "（可能已被删除或设为私密）")
         case .unsupportedStream: return "这个视频是直播流（m3u8）格式，暂不支持下载"
+        case .unsupported(let what): return "暂不支持\(what)"
         }
     }
 
