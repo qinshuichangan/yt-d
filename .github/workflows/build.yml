@@ -3,7 +3,7 @@ name: Build IPA
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, merge-editor]
 
 jobs:
   build:
