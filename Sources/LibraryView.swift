@@ -182,6 +182,7 @@ struct LibraryView: View {
 
 struct PlayerView: View {
     let url: URL
+    @EnvironmentObject private var router: AppRouter
     @State private var player: AVPlayer?
     @State private var message: String?
 
@@ -214,6 +215,16 @@ struct PlayerView: View {
                 }
                 ShareLink(item: url)
             }
+        }
+        .safeAreaInset(edge: .bottom) {
+            Button {
+                player?.pause()
+                router.edit(url)
+            } label: {
+                Label("剪辑 / 转换 / 压缩", systemImage: "scissors")
+            }
+            .buttonStyle(.bordered)
+            .padding(.bottom, 12)
         }
         .onAppear {
             let p = AVPlayer(url: url)

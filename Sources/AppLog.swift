@@ -52,7 +52,7 @@ enum AppLog {
         }
         let defaults = UserDefaults.standard
         let header = """
-        === 视频下载 运行日志 ===
+        === 视频工具 运行日志 ===
         版本：\(version)（\(build)）
         系统：iOS \(UIDevice.current.systemVersion)，\(model)
         线程数：\(ChunkedDownloader.threadCount)，队列模式：\(defaults.bool(forKey: DownloadManager.queueModeKey) ? "开" : "关")

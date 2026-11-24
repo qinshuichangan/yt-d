@@ -4,32 +4,85 @@ options:
   deploymentTarget:
     iOS: "16.0"
 
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+
 packages:
   YouTubeKit:
     url: https://github.com/alexeichhorn/YouTubeKit
     from: 0.4.9
 
 targets:
+  # MP3 编码器（LAME，只编码不解码）
+  mp3lame:
+    type: library.static
+    platform: iOS
+    sources:
+      - path: Vendor/lame/libmp3lame
+        compilerFlags: ["-DHAVE_CONFIG_H"]
+        headerVisibility: project
+    settings:
+      base:
+        HEADER_SEARCH_PATHS: ["$(SRCROOT)/Vendor/lame/include", "$(SRCROOT)/Vendor/lame/libmp3lame"]
+        USE_HEADERMAP: "NO"
+        GCC_WARN_INHIBIT_ALL_WARNINGS: "YES"
+        SKIP_INSTALL: "YES"
+
+  # OGG Vorbis 编码器（libogg + libvorbis）
+  vorbis:
+    type: library.static
+    platform: iOS
+    sources:
+      - path: Vendor/ogg/src
+        headerVisibility: project
+      - path: Vendor/vorbis/lib
+        headerVisibility: project
+    settings:
+      base:
+        HEADER_SEARCH_PATHS: ["$(SRCROOT)/Vendor/ogg/include", "$(SRCROOT)/Vendor/vorbis/include", "$(SRCROOT)/Vendor/vorbis/lib"]
+        USE_HEADERMAP: "NO"
+        GCC_WARN_INHIBIT_ALL_WARNINGS: "YES"
+        SKIP_INSTALL: "YES"
+
   YTDownloader:
     type: application
     platform: iOS
-    sources: [Sources]
+    sources:
+      - Sources
+      - path: Codecs
     dependencies:
       - package: YouTubeKit
+      - target: mp3lame
+      - target: vorbis
     info:
       path: Sources/Info.plist
       properties:
-        CFBundleDisplayName: 视频下载
-        CFBundleShortVersionString: "2.57"
-        CFBundleVersion: "23"
+        CFBundleDisplayName: 视频工具
+        CFBundleDevelopmentRegion: zh-Hans
+        CFBundleLocalizations: [zh-Hans]
+        CFBundleShortVersionString: "2.67"
+        CFBundleVersion: "24"
         UILaunchScreen: {}
         CFBundleURLTypes:
           - CFBundleURLName: com.example.ytdownloader
             CFBundleURLSchemes: [ytdl]
         UIFileSharingEnabled: true
-        UIBackgroundModes: [audio]
         LSSupportsOpeningDocumentsInPlace: true
-        NSPhotoLibraryAddUsageDescription: 用于把下载的视频保存到相册
+        NSPhotoLibraryAddUsageDescription: 用于把下载、剪好的视频保存到相册
+        # audio：下载时放无声音频保持后台；processing：iOS 26 起剪辑转换切到后台也能继续
+        UIBackgroundModes: [audio, processing]
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.example.ytdownloader.export.*
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: 视频
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.movie]
+          - CFBundleTypeName: 音频
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.audio]
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
     settings:
@@ -37,9 +90,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.ytdownloader
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
-        CODE_SIGNING_ALLOWED: "NO"
-        CODE_SIGNING_REQUIRED: "NO"
-        CODE_SIGN_IDENTITY: ""
+        SWIFT_OBJC_BRIDGING_HEADER: Codecs/VideoTool-Bridging-Header.h
+        HEADER_SEARCH_PATHS: ["$(SRCROOT)/Codecs", "$(SRCROOT)/Vendor/lame/include", "$(SRCROOT)/Vendor/ogg/include", "$(SRCROOT)/Vendor/vorbis/include"]
+        USE_HEADERMAP: "NO"
 
 schemes:
   YTDownloader:

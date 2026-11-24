@@ -17,6 +17,8 @@ final class BackgroundKeeper {
 
     private init() {}
 
+    var isActive: Bool { users > 0 }
+
     /// 开始一项需要在后台继续的工作（和 end() 成对调用）
     func begin() {
         users += 1
@@ -33,7 +35,8 @@ final class BackgroundKeeper {
         guard users > 0 else { return }
         users -= 1
         guard users == 0 else { return }
-        UIApplication.shared.isIdleTimerDisabled = false
+        // 剪辑那边还在处理的话，继续保持不锁屏
+        if !WorkSession.shared.isActive { UIApplication.shared.isIdleTimerDisabled = false }
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers = []
         player?.stop()
